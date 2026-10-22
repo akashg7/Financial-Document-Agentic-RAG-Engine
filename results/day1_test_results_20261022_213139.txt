@@ -1,0 +1,61 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.14.0, pytest-9.1.1, pluggy-1.7.0 -- /Users/akashg/Desktop/Financial-Document-Agentic-RAG-Engine/.venv/bin/python3
+cachedir: .pytest_cache
+rootdir: /Users/akashg/Desktop/Financial-Document-Agentic-RAG-Engine
+configfile: pytest.ini
+plugins: asyncio-1.4.0, anyio-4.15.1
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 33 items
+
+tests/test_api.py::TestHealthCheck::test_health_returns_200 PASSED       [  3%]
+tests/test_api.py::TestHealthCheck::test_health_returns_status PASSED    [  6%]
+tests/test_api.py::TestIngestionEndpoint::test_ingest_returns_job_id PASSED [  9%]
+tests/test_api.py::TestIngestionEndpoint::test_ingest_invalid_source_still_creates_job PASSED [ 12%]
+tests/test_api.py::TestJobStatusEndpoint::test_job_status_after_create PASSED [ 15%]
+tests/test_api.py::TestJobStatusEndpoint::test_unknown_job_returns_404 PASSED [ 18%]
+tests/test_chunker.py::TestContentHash::test_deterministic PASSED        [ 21%]
+tests/test_chunker.py::TestContentHash::test_different_inputs_different_hashes PASSED [ 24%]
+tests/test_chunker.py::TestContentHash::test_hash_format PASSED          [ 27%]
+tests/test_chunker.py::TestContentHash::test_whitespace_sensitivity PASSED [ 30%]
+tests/test_chunker.py::TestRecursiveCharacterSplit::test_short_text_no_split PASSED [ 33%]
+tests/test_chunker.py::TestRecursiveCharacterSplit::test_empty_text PASSED [ 36%]
+tests/test_chunker.py::TestRecursiveCharacterSplit::test_respects_chunk_size PASSED [ 39%]
+tests/test_chunker.py::TestRecursiveCharacterSplit::test_paragraph_boundary_splitting PASSED [ 42%]
+tests/test_chunker.py::TestRecursiveCharacterSplit::test_produces_non_empty_chunks PASSED [ 45%]
+tests/test_chunker.py::TestRecursiveCharacterSplit::test_overlap_present PASSED [ 48%]
+tests/test_chunker.py::TestRecursiveCharacterSplit::test_no_text_loss_without_overlap PASSED [ 51%]
+tests/test_chunker.py::TestChunkDocument::test_produces_chunks PASSED    [ 54%]
+tests/test_chunker.py::TestChunkDocument::test_metadata_propagation PASSED [ 57%]
+tests/test_chunker.py::TestChunkDocument::test_chunk_ids_unique PASSED   [ 60%]
+tests/test_chunker.py::TestChunkDocument::test_chunk_ids_contain_doc_id PASSED [ 63%]
+tests/test_chunker.py::TestChunkDocument::test_content_hashes_populated PASSED [ 66%]
+tests/test_chunker.py::TestChunkDocument::test_chunk_index_sequential PASSED [ 69%]
+tests/test_chunker.py::TestChunkDocument::test_section_and_page_propagation PASSED [ 72%]
+tests/test_chunker.py::TestDeduplication::test_no_duplicates_all_inserted PASSED [ 75%]
+tests/test_chunker.py::TestDeduplication::test_all_duplicates_skipped PASSED [ 78%]
+tests/test_chunker.py::TestDeduplication::test_partial_dedup PASSED      [ 81%]
+tests/test_chunker.py::TestDeduplication::test_intra_batch_dedup PASSED  [ 84%]
+tests/test_chunker.py::TestDeduplication::test_existing_hashes_updated PASSED [ 87%]
+tests/test_config.py::TestSettings::test_default_values PASSED           [ 90%]
+tests/test_config.py::TestSettings::test_env_override PASSED             [ 93%]
+tests/test_config.py::TestSettings::test_chunk_overlap_less_than_size PASSED [ 96%]
+tests/test_config.py::TestSettings::test_settings_singleton_import PASSED [100%]
+
+=============================== warnings summary ===============================
+tests/test_api.py::TestIngestionEndpoint::test_ingest_returns_job_id
+tests/test_api.py::TestJobStatusEndpoint::test_job_status_after_create
+  /Users/akashg/Desktop/Financial-Document-Agentic-RAG-Engine/app/ingestion/loader.py:191: XMLParsedAsHTMLWarning: It looks like you're using an HTML parser to parse an XML document.
+  
+  Assuming this really is an XML document, what you're doing might work, but you should know that using an XML parser will be more reliable. To parse this document as XML, make sure you have the Python package 'lxml' installed, and pass the keyword argument `features="xml"` into the BeautifulSoup constructor.
+  
+  If you want or need to use an HTML parser on this document, you can make this warning go away by filtering it. To do that, run this code before calling the BeautifulSoup constructor:
+  
+      from bs4 import XMLParsedAsHTMLWarning
+      import warnings
+  
+      warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
+  
+    soup = BeautifulSoup(resp.content, "lxml")
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+======================== 33 passed, 2 warnings in 3.02s ========================
