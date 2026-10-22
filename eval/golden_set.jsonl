@@ -1,0 +1,17 @@
+// Golden set for evaluation — 100+ questions with expected source chunks.
+// Format: one JSON object per line.
+// Fields:
+//   question: the natural language question
+//   expected_answer: reference answer (may be approximate)
+//   expected_chunks: list of chunk_ids that should be retrieved
+//   ticker: relevant ticker symbol
+//   doc_type: "10-K", "10-Q", or "earnings_call"
+//   answerable: true if the question has an answer in the corpus, false for unanswerable questions
+//   difficulty: "easy", "medium", "hard"
+//   category: "financial_metric", "risk_factor", "strategy", "comparison", "temporal", "unanswerable"
+//
+// This file will be populated in Day 4 with 100+ questions (~20 unanswerable).
+// For now, here are seed examples showing the format:
+{"question": "What was Apple's total revenue in fiscal year 2023?", "expected_answer": "Apple reported total revenue of approximately $383.3 billion in fiscal year 2023.", "expected_chunks": [], "ticker": "AAPL", "doc_type": "10-K", "answerable": true, "difficulty": "easy", "category": "financial_metric"}
+{"question": "How did Microsoft's cloud revenue compare to its on-premise revenue in Q3 2023?", "expected_answer": "", "expected_chunks": [], "ticker": "MSFT", "doc_type": "10-Q", "answerable": true, "difficulty": "medium", "category": "comparison"}
+{"question": "What is Tesla's projected revenue for 2030?", "expected_answer": "Insufficient evidence found.", "expected_chunks": [], "ticker": "TSLA", "doc_type": "10-K", "answerable": false, "difficulty": "hard", "category": "unanswerable"}
