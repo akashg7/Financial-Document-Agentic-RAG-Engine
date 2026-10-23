@@ -5,6 +5,11 @@ WHY a factory-style lifespan instead of @app.on_event:
 - @app.on_event("startup") is deprecated in FastAPI 0.100+.
 - The lifespan context manager gives us clean setup/teardown with
   proper resource cleanup even if startup partially fails.
+
+DAY 2 CHANGES:
+- Added Qdrant collection initialization on startup.
+- Qdrant init is wrapped in try/except so the app starts even if
+  Qdrant is temporarily unavailable (useful for local dev without Docker).
 """
 
 import logging
@@ -29,10 +34,25 @@ async def lifespan(app: FastAPI):
     """
     Application lifespan: runs once at startup (before yield) and
     once at shutdown (after yield).
+
+    Startup tasks:
+    1. Initialize Qdrant collection (create if not exists, set up indexes)
     """
     logger.info("Starting Financial Document Intelligence Engine v%s", "0.1.0")
     logger.info("Environment: %s", settings.app_env)
-    # Future: initialize Qdrant collection, warm embedding model, etc.
+
+    # Initialize Qdrant collection
+    try:
+        from app.retrieval.vector_store import init_collection
+        init_collection()
+        logger.info("Qdrant collection initialized successfully")
+    except Exception as e:
+        logger.warning(
+            "Could not initialize Qdrant collection: %s. "
+            "The app will start, but ingestion/search will fail until Qdrant is available.",
+            e,
+        )
+
     yield
     logger.info("Shutting down...")
 
