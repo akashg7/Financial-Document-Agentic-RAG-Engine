@@ -26,7 +26,10 @@ from typing import Optional
 from urllib.parse import urljoin
 
 import requests
-from bs4 import BeautifulSoup
+import warnings
+from bs4 import BeautifulSoup, XMLParsedAsHTMLWarning
+
+warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
 
 from app.config import settings
 from app.schemas import DocumentMetadata, DocumentType
