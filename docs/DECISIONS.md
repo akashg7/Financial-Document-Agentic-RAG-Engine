@@ -103,3 +103,74 @@ Every major tradeoff is recorded here with: the decision, why, what alternatives
 - Docker without Compose — more manual, no dependency ordering.
 
 **When I'd change it**: Never for this project. Docker Compose is the right tool for local multi-service development.
+
+---
+
+## Decision 7: sentence-transformers (`all-MiniLM-L6-v2`) Local Embeddings
+
+**Decision**: Run `sentence-transformers/all-MiniLM-L6-v2` locally inside the application runtime rather than calling OpenAI `text-embedding-3-small` or using `fastembed`.
+
+**Why**:
+- Zero cost and privacy compliant: SEC filings and earnings data are processed without network egress to commercial model providers, satisfying the zero-cost constraint.
+- Standard and ubiquitous: `sentence-transformers` is universally recognized in industry ML/NLP teams.
+- Compact & performant: 384 dimensions balances semantic resolution with low memory and fast similarity search (~80MB model size, easily runs on CPU in sub-15ms for queries).
+- Normalized embeddings out-of-the-box: dot product equals cosine similarity.
+
+**Alternatives**:
+- `text-embedding-3-small` (OpenAI): Higher dimensionality (1536) and slightly better benchmark retrieval, but violates zero-cost constraint and introduces external network latency, rate limits, and egress privacy issues.
+- `fastembed` (Qdrant ONNX runtime): Lighter runtime dependencies, but less transparent model customizability and fewer community examples than `sentence-transformers`.
+- `BAAI/bge-small-en-v1.5`: Marginally higher MTEB score, but `all-MiniLM-L6-v2` is more standard for cross-platform CPU inference.
+
+**When I'd change it**: If Day 4 retrieval evaluation demonstrates specific domain failures on financial jargon, I would evaluate fine-tuned financial embedding models (e.g., `FinBERT` embeddings or `bge-base-financial`).
+
+---
+
+## Decision 8: Cosine Distance for Dense Vector Similarity
+
+**Decision**: Configure Qdrant collection with `Distance.COSINE` for vector indexing and distance measurement.
+
+**Why**:
+- Normalized vector geometry: Cosine distance evaluates directional angle rather than vector magnitude, eliminating bias toward longer text chunks that might have larger magnitude before normalization.
+- Consistent thresholding: Similarity scores bounded in `[-1.0, 1.0]` (or `[0.0, 1.0]` for normalized text embeddings), making relevance cutoff tuning straightforward for agentic gating.
+
+**Alternatives**:
+- `Distance.DOT`: Equivalent to cosine when vectors are unit-normalized ($L_2 = 1.0$), and computationally faster. However, Cosine distance in Qdrant provides guardrails if an unnormalized vector is ever passed.
+- `Distance.EUCLID`: Sensitive to absolute length differences; poor choice for variable-length semantic text chunks.
+
+**When I'd change it**: If we switch to an embedding model specifically trained for dot-product or maximum inner product search (MIPS) where magnitude conveys document authority or prior probability.
+
+---
+
+## Decision 9: In-Memory Qdrant Client Fallback for Integration Testing
+
+**Decision**: Provide `location=":memory:"` support in `get_qdrant_client()` during test fixtures, enabling realistic vector search testing without requiring Docker or network services.
+
+**Why**:
+- High developer velocity: Tests run in <10 seconds locally and in lightweight CI pipelines without starting Docker containers.
+- True API fidelity: Qdrant's embedded in-memory engine executes real HNSW indexing and payload filtering code, unlike mocking where mocked queries do not validate Qdrant filter schemas.
+- Idempotent and isolated: Each test run gets a pristine database instance.
+
+**Alternatives**:
+- Testcontainers: Spawns real Docker container during pytest. Reliable, but adds 15-30s overhead per test session and requires Docker daemon availability.
+- Pure `unittest.mock.MagicMock`: Doesn't test actual vector math, collection creation, or Qdrant query syntax errors (which caught a `FieldCondition` argument mismatch).
+
+**When I'd change it**: If testing distributed cluster clustering, snapshot restorations, or specific storage engine disk I/O.
+
+---
+
+## Decision 10: Redis Hashes with TTL for Ingestion Job Tracking & Graceful Fallback
+
+**Decision**: Migrate ingestion job state from in-memory dictionary to Redis Hashes with 24-hour TTL (`settings.redis_job_ttl_seconds`), with automatic fallback to an in-memory dictionary if Redis is offline.
+
+**Why**:
+- Process resilience: If the FastAPI container restarts or crashes during a long ingestion batch, job metadata and status history are preserved in Redis.
+- Horizontal scaling: Multiple API replicas can query and update the same job IDs.
+- Automatic cleanup: TTL guarantees Redis memory does not grow unbounded from old completed or failed ingestion jobs.
+- Graceful degradation: Unit tests and standalone local runs work seamlessly without requiring a running Redis instance.
+
+**Alternatives**:
+- PostgreSQL / SQLite task table: Good durability, but heavier schema migrations and slower for high-frequency progress polling.
+- Celery / Flower: Heavier orchestration framework with extra worker containers; overkill for single-worker background tasks.
+
+**When I'd change it**: If we move to distributed workers requiring persistent job logs and complex DAG dependencies across documents.
+
