@@ -4,6 +4,8 @@ API routes for the Financial Document Intelligence Engine.
 Day 1: health check and ingestion endpoints.
 Day 2: added POST /search/dense for semantic vector search,
        swapped in-memory job store for Redis-backed store.
+Day 3: added POST /search/sparse for BM25 keyword search,
+       added POST /search/hybrid for RRF-fused dense+sparse search.
 """
 
 import time
@@ -118,5 +120,106 @@ async def dense_search(request: SearchRequest):
         query=request.query,
         results=results,
         retrieval_method="dense",
+        latency_ms=round(latency_ms, 2),
+    )
+
+
+@router.post("/search/sparse", response_model=SearchResponse, tags=["search"])
+async def sparse_search(request: SearchRequest):
+    """
+    Perform sparse (BM25 keyword) search over ingested documents.
+
+    HOW IT WORKS:
+    1. The query is tokenized and encoded as a BM25-weighted sparse vector
+       where each dimension corresponds to a vocabulary term (hashed to an int),
+       and the value is the term's IDF weight.
+    2. Qdrant computes dot product of this query sparse vector against all
+       stored document sparse vectors → this is equivalent to BM25 scoring.
+    3. Returns the top_k most relevant chunks.
+
+    WHY sparse search?
+    - Dense search excels at semantic similarity but can miss exact terms.
+    - Sparse/BM25 search captures exact keyword matches, which is critical
+      for financial jargon: "EBITDA", "Item 1A", "10-K/A", ticker symbols.
+    - Day 3's hybrid endpoint fuses both for the best of both worlds.
+    """
+    from app.retrieval.vector_store import search_sparse
+
+    start = time.time()
+
+    results = search_sparse(
+        query=request.query,
+        top_k=request.top_k,
+        ticker_filter=request.ticker_filter,
+        doc_type_filter=request.doc_type_filter.value if request.doc_type_filter else None,
+    )
+
+    latency_ms = (time.time() - start) * 1000
+
+    return SearchResponse(
+        query=request.query,
+        results=results,
+        retrieval_method="sparse",
+        latency_ms=round(latency_ms, 2),
+    )
+
+
+@router.post("/search/hybrid", response_model=SearchResponse, tags=["search"])
+async def hybrid_search(request: SearchRequest):
+    """
+    Perform hybrid search: dense + sparse, fused with Reciprocal Rank Fusion.
+
+    HOW IT WORKS:
+    1. Run dense (semantic) search → top_k * 2 results.
+    2. Run sparse (BM25) search → top_k * 2 results.
+    3. Fuse both ranked lists using RRF (rank-based, scale-invariant).
+    4. Return the top_k fused results.
+
+    WHY over-retrieve (top_k * 2) before fusion:
+    - RRF rewards results that appear in BOTH lists. If we only retrieve
+      top_k from each, a result at rank k+1 in both lists would be missed
+      even though it should rank high in the fused output.
+    - Retrieving 2x gives RRF enough candidates to find overlap.
+
+    WHY RRF over weighted score averaging:
+    - Dense scores (cosine similarity: 0.3–0.9) and sparse scores (BM25: 0.1–25.0)
+      live on completely different scales. Averaging would let BM25 dominate.
+    - RRF uses RANK position only, so it's scale-invariant.
+    """
+    from app.retrieval.vector_store import search_dense, search_sparse
+    from app.retrieval.rrf import reciprocal_rank_fusion
+
+    start = time.time()
+
+    # Over-retrieve from both methods to give RRF enough candidates
+    retrieval_k = min(request.top_k * 2, 50)
+
+    dense_results = search_dense(
+        query=request.query,
+        top_k=retrieval_k,
+        ticker_filter=request.ticker_filter,
+        doc_type_filter=request.doc_type_filter.value if request.doc_type_filter else None,
+    )
+
+    sparse_results = search_sparse(
+        query=request.query,
+        top_k=retrieval_k,
+        ticker_filter=request.ticker_filter,
+        doc_type_filter=request.doc_type_filter.value if request.doc_type_filter else None,
+    )
+
+    # Fuse with RRF
+    fused_results = reciprocal_rank_fusion(
+        [dense_results, sparse_results],
+        k=60,
+        top_n=request.top_k,
+    )
+
+    latency_ms = (time.time() - start) * 1000
+
+    return SearchResponse(
+        query=request.query,
+        results=fused_results,
+        retrieval_method="hybrid",
         latency_ms=round(latency_ms, 2),
     )

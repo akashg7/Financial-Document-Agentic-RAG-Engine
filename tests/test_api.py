@@ -9,26 +9,25 @@ Day 1 tests:
 
 Day 2 additions:
 - POST /search/dense returns search results
-- Search with filters
-- Search on empty collection
+- Search request validation (query required)
 
-NOTE: The search endpoint tests use an in-memory Qdrant client
-injected via set_qdrant_client(). This avoids needing Docker for tests.
+Day 3 additions:
+- POST /search/sparse returns BM25 keyword search results
+- POST /search/hybrid returns RRF-fused results
 """
 
-import pytest
 import hashlib
-from unittest.mock import patch
+import pytest
 from httpx import AsyncClient, ASGITransport
 
 from app.main import app
-from app.ingestion.redis_job_store import force_memory_fallback, reset_store
+from app.schemas import IngestionStatus
+from app.ingestion.redis_job_store import reset_store
 
 
 @pytest.fixture(autouse=True)
-def setup_job_store():
-    """Use in-memory job store for all API tests."""
-    force_memory_fallback()
+def clean_job_store():
+    """Ensure the job store is empty before and after each test."""
     reset_store()
     yield
     reset_store()
@@ -36,23 +35,20 @@ def setup_job_store():
 
 @pytest.fixture
 async def client():
-    """Async HTTP client for testing FastAPI endpoints."""
+    """Async test client for the FastAPI app."""
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
 
 
-class TestHealthCheck:
-    """Tests for the /health endpoint."""
+class TestHealthEndpoint:
+    """Tests for GET /health."""
 
     @pytest.mark.asyncio
-    async def test_health_returns_200(self, client):
+    async def test_health_check_returns_200(self, client):
+        """Health endpoint should return 200 with status=healthy."""
         resp = await client.get("/health")
         assert resp.status_code == 200
-
-    @pytest.mark.asyncio
-    async def test_health_returns_status(self, client):
-        resp = await client.get("/health")
         data = resp.json()
         assert data["status"] == "healthy"
         assert "version" in data
@@ -63,7 +59,7 @@ class TestIngestionEndpoint:
 
     @pytest.mark.asyncio
     async def test_ingest_returns_job_id(self, client):
-        """POST /ingest should return a job_id and pending status."""
+        """POST /ingest should return 200 with a valid UUID job_id."""
         resp = await client.post(
             "/api/v1/ingest",
             json={
@@ -76,17 +72,26 @@ class TestIngestionEndpoint:
         assert resp.status_code == 200
         data = resp.json()
         assert "job_id" in data
+        assert len(data["job_id"]) == 36  # UUID length
         assert data["status"] == "pending"
 
     @pytest.mark.asyncio
-    async def test_ingest_invalid_source_still_creates_job(self, client):
-        """Even an unknown source creates a job (it will fail during processing)."""
+    async def test_ingest_with_defaults(self, client):
+        """POST /ingest with minimal fields should use defaults."""
         resp = await client.post(
             "/api/v1/ingest",
-            json={"source": "unknown_source"},
+            json={"source": "huggingface"},
         )
         assert resp.status_code == 200
-        assert "job_id" in resp.json()
+        data = resp.json()
+        assert "job_id" in data
+        assert data["status"] == "pending"
+
+    @pytest.mark.asyncio
+    async def test_ingest_missing_source_fails(self, client):
+        """POST /ingest without 'source' should return 422 validation error."""
+        resp = await client.post("/api/v1/ingest", json={})
+        assert resp.status_code == 422
 
 
 class TestJobStatusEndpoint:
@@ -94,7 +99,7 @@ class TestJobStatusEndpoint:
 
     @pytest.mark.asyncio
     async def test_job_status_after_create(self, client):
-        """After creating a job, its status should be retrievable."""
+        """Immediately after creation, job should be queryable."""
         # Create a job
         create_resp = await client.post(
             "/api/v1/ingest",
@@ -196,3 +201,92 @@ class TestDenseSearchEndpoint:
             json={"top_k": 5},
         )
         assert resp.status_code == 422  # Validation error
+
+
+class TestSparseSearchEndpoint:
+    """Tests for POST /api/v1/search/sparse."""
+
+    @pytest.mark.asyncio
+    async def test_sparse_search_returns_response_shape(self, client):
+        """Sparse search endpoint returns valid response structure."""
+        from qdrant_client import QdrantClient
+        from app.retrieval.vector_store import set_qdrant_client, init_collection, upsert_chunks
+        from app.retrieval.sparse import fit_bm25, encode_sparse_document
+        from app.schemas import Chunk, ChunkMetadata, DocumentType
+
+        memory_client = QdrantClient(":memory:")
+        set_qdrant_client(memory_client)
+        init_collection()
+
+        text = "Apple reported revenue of $383 billion for fiscal year 2023."
+        fit_bm25([text])
+        chunk = Chunk(
+            text=text,
+            metadata=ChunkMetadata(
+                chunk_id="AAPL_10-K_2023_chunk_0000",
+                doc_id="AAPL_10-K_2023",
+                doc_type=DocumentType.SEC_10K,
+                ticker="AAPL",
+                chunk_index=0,
+                content_hash=hashlib.sha256(text.encode()).hexdigest(),
+            ),
+        )
+        upsert_chunks([chunk], sparse_vectors=[encode_sparse_document(text)])
+
+        try:
+            resp = await client.post(
+                "/api/v1/search/sparse",
+                json={"query": "revenue", "top_k": 3},
+            )
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["retrieval_method"] == "sparse"
+            assert len(data["results"]) >= 1
+            assert "revenue" in data["results"][0]["text"].lower()
+        finally:
+            set_qdrant_client(None)
+
+
+class TestHybridSearchEndpoint:
+    """Tests for POST /api/v1/search/hybrid."""
+
+    @pytest.mark.asyncio
+    async def test_hybrid_search_fuses_results(self, client):
+        """Hybrid search endpoint returns RRF-fused results."""
+        from qdrant_client import QdrantClient
+        from app.retrieval.vector_store import set_qdrant_client, init_collection, upsert_chunks
+        from app.retrieval.sparse import fit_bm25, encode_sparse_document
+        from app.schemas import Chunk, ChunkMetadata, DocumentType
+
+        memory_client = QdrantClient(":memory:")
+        set_qdrant_client(memory_client)
+        init_collection()
+
+        text = "Apple reported revenue of $383 billion for fiscal year 2023."
+        fit_bm25([text])
+        chunk = Chunk(
+            text=text,
+            metadata=ChunkMetadata(
+                chunk_id="AAPL_10-K_2023_chunk_0000",
+                doc_id="AAPL_10-K_2023",
+                doc_type=DocumentType.SEC_10K,
+                ticker="AAPL",
+                chunk_index=0,
+                content_hash=hashlib.sha256(text.encode()).hexdigest(),
+            ),
+        )
+        upsert_chunks([chunk], sparse_vectors=[encode_sparse_document(text)])
+
+        try:
+            resp = await client.post(
+                "/api/v1/search/hybrid",
+                json={"query": "Apple revenue", "top_k": 3},
+            )
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["retrieval_method"] == "hybrid"
+            assert len(data["results"]) >= 1
+            assert data["results"][0]["chunk_id"] == "AAPL_10-K_2023_chunk_0000"
+            assert data["results"][0]["score"] > 0
+        finally:
+            set_qdrant_client(None)

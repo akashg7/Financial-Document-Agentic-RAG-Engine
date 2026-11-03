@@ -8,18 +8,18 @@ FLOW:
 1. Load documents from the requested source (SEC EDGAR or HuggingFace)
 2. Chunk each document with metadata
 3. Deduplicate against existing chunk hashes (from Qdrant)
-4. Embed and upsert to Qdrant in batches
-5. Update job status throughout (in Redis)
+4. Fit BM25 model on all chunk texts (for sparse vector encoding)
+5. Embed (dense + sparse) and upsert to Qdrant in batches
+6. Update job status throughout (in Redis)
 
 WHY a separate pipeline module instead of inlining in the route handler:
 - Testability: we can test the pipeline without spinning up FastAPI.
 - Reusability: the same pipeline can be called from CLI, tests, or a worker queue.
 - Separation of concerns: the route handles HTTP; the pipeline handles business logic.
 
-CHANGE FROM DAY 1:
-- Replaced in-memory job store with Redis-backed store
-- Added embedding + Qdrant upsert step after chunking
-- Replaced in-memory _existing_hashes with Qdrant scroll query
+CHANGE FROM DAY 2:
+- Added BM25 fitting step after chunking
+- Generates sparse vectors for each chunk and passes them to upsert_chunks
 """
 
 import logging
@@ -70,7 +70,6 @@ def run_ingestion_pipeline(job_id: str, request: IngestionRequest):
 
         # ── Step 2: Get existing hashes for cross-batch dedup ──────
         # Pull content hashes from Qdrant so we skip chunks we've already stored.
-        # This replaces the Day 1 in-memory _existing_hashes set.
         try:
             from app.retrieval.vector_store import get_existing_hashes
             existing_hashes = get_existing_hashes()
@@ -112,10 +111,34 @@ def run_ingestion_pipeline(job_id: str, request: IngestionRequest):
             total_skipped,
         )
 
-        # ── Step 4: Embed and upsert to Qdrant ─────────────────────
+        # ── Step 4: Fit BM25 and generate sparse vectors ───────────
+        # WHY fit BM25 here (during ingestion) instead of at search time:
+        # - BM25 needs corpus-level statistics (IDF, average doc length).
+        #   These must be computed ONCE over all chunks, not per-query.
+        # - We fit the model, then encode each chunk as a sparse vector
+        #   and store it alongside the dense vector in Qdrant.
+        sparse_vectors = None
+        if all_chunks_to_insert:
+            try:
+                from app.retrieval.sparse import fit_bm25, encode_sparse_document
+
+                chunk_texts = [c.text for c in all_chunks_to_insert]
+                fit_bm25(chunk_texts)
+
+                sparse_vectors = [encode_sparse_document(c.text) for c in all_chunks_to_insert]
+                logger.info("Generated %d BM25 sparse vectors for job %s", len(sparse_vectors), job_id)
+            except Exception as e:
+                logger.warning(
+                    "Could not generate sparse vectors (%s). "
+                    "Falling back to dense-only ingestion.",
+                    e,
+                )
+                sparse_vectors = None
+
+        # ── Step 5: Embed and upsert to Qdrant ─────────────────────
         if all_chunks_to_insert:
             from app.retrieval.vector_store import upsert_chunks
-            upserted = upsert_chunks(all_chunks_to_insert)
+            upserted = upsert_chunks(all_chunks_to_insert, sparse_vectors=sparse_vectors)
             logger.info(
                 "Job %s: upserted %d chunks to Qdrant", job_id, upserted
             )
