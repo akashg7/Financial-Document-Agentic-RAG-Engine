@@ -4,7 +4,7 @@ Qdrant vector store client for upserting and searching document chunks.
 WHY Qdrant over Pinecone/Weaviate/Chroma:
 - Free and open-source, runs locally in Docker — zero cost.
 - Native support for both dense AND sparse vectors in the same collection,
-  which we'll use in Day 3 for hybrid search.
+  which we use for hybrid search (dense + BM25 sparse).
 - Payload filtering (filter by ticker, doc_type) without a separate metadata DB.
 - gRPC port (6334) for fast bulk operations; REST port (6333) for debugging.
 
@@ -14,8 +14,9 @@ WHY cosine distance:
   for ranking. Qdrant's Cosine distance is 1 - cosine_similarity, so lower = better.
 - We report scores as similarity (1 - distance) so higher = better for the user.
 
-COLLECTION SCHEMA:
-- Vector: "dense" — 384 dimensions, Cosine distance
+COLLECTION SCHEMA (Day 3 — named vectors):
+- Dense vector: "dense" — 384 dimensions, Cosine distance
+- Sparse vector: "sparse" — variable-length BM25 term weights (indices + values)
 - Payload fields:
     - chunk_id (keyword) — for dedup lookups
     - doc_id (keyword) — for document-level filtering
@@ -24,6 +25,11 @@ COLLECTION SCHEMA:
     - content_hash (keyword) — for cross-batch dedup
     - text (text) — the chunk content (stored for retrieval, not indexed for search)
     - All other ChunkMetadata fields stored as payload
+
+WHY named vectors instead of separate collections:
+- Single upsert writes both dense and sparse vectors atomically.
+- Qdrant handles both vector types in the same HNSW graph traversal.
+- Single scroll/delete operation for both vectors (simpler ingestion/eviction).
 """
 
 import logging
@@ -39,7 +45,9 @@ from qdrant_client.http.models import (
     FieldCondition,
     MatchValue,
     PayloadSchemaType,
+    SparseVector,
 )
+from qdrant_client.models import SparseVectorParams, SparseIndexParams
 
 from app.config import settings
 from app.schemas import Chunk, SearchResult
@@ -96,6 +104,10 @@ def init_collection() -> None:
     Called once during FastAPI lifespan startup. Idempotent — safe to call
     multiple times (e.g., on app restart).
 
+    Day 3: Collection now uses NAMED vectors:
+    - "dense": 384-dim cosine for semantic search
+    - "sparse": variable-length BM25 term weights for keyword search
+
     WHY we create indexes on keyword fields:
     - Payload indexes let Qdrant filter BEFORE vector search, not after.
       Without an index on 'ticker', a filtered search would scan all vectors,
@@ -113,16 +125,23 @@ def init_collection() -> None:
         logger.info("Qdrant collection '%s' already exists", collection_name)
         return
 
-    # Create collection with dense vector config
+    # Create collection with named dense + sparse vector configs
     client.create_collection(
         collection_name=collection_name,
-        vectors_config=VectorParams(
-            size=EMBEDDING_DIM,
-            distance=Distance.COSINE,
-        ),
+        vectors_config={
+            "dense": VectorParams(
+                size=EMBEDDING_DIM,
+                distance=Distance.COSINE,
+            ),
+        },
+        sparse_vectors_config={
+            "sparse": SparseVectorParams(
+                index=SparseIndexParams(),
+            ),
+        },
     )
     logger.info(
-        "Created Qdrant collection '%s' (dim=%d, distance=Cosine)",
+        "Created Qdrant collection '%s' (dense: dim=%d cosine, sparse: BM25)",
         collection_name,
         EMBEDDING_DIM,
     )
@@ -137,19 +156,26 @@ def init_collection() -> None:
     logger.info("Created payload indexes on ticker, doc_type, doc_id, content_hash")
 
 
-def upsert_chunks(chunks: list[Chunk], batch_size: int = 64) -> int:
+def upsert_chunks(
+    chunks: list[Chunk],
+    batch_size: int = 64,
+    sparse_vectors: Optional[list[SparseVector]] = None,
+) -> int:
     """
     Embed and upsert chunks into Qdrant.
 
     Steps:
     1. Extract text from each chunk.
     2. Batch-embed all texts using sentence-transformers.
-    3. Build PointStruct objects with vectors + payload.
-    4. Upsert to Qdrant in batches.
+    3. Optionally attach sparse (BM25) vectors if provided.
+    4. Build PointStruct objects with named vectors + payload.
+    5. Upsert to Qdrant in batches.
 
     Args:
         chunks: List of Chunk objects (text + metadata).
         batch_size: Number of chunks to embed and upsert at once.
+        sparse_vectors: Optional list of BM25 sparse vectors, one per chunk.
+                        If None, points are upserted with dense vectors only.
 
     Returns:
         Number of points upserted.
@@ -180,13 +206,16 @@ def upsert_chunks(chunks: list[Chunk], batch_size: int = 64) -> int:
         # Step 2: Embed the batch
         embeddings = embed_texts(texts, batch_size=batch_size)
 
-        # Step 3: Build Qdrant points
+        # Step 3: Get sparse vectors for this batch (if available)
+        batch_sparse = None
+        if sparse_vectors is not None:
+            batch_sparse = sparse_vectors[batch_start : batch_start + batch_size]
+
+        # Step 4: Build Qdrant points
         points = []
-        for chunk, embedding in zip(batch, embeddings):
+        for i, (chunk, embedding) in enumerate(zip(batch, embeddings)):
             # Use chunk_id as the Qdrant point ID (we need a deterministic ID
             # so re-upserts overwrite the same point)
-            # Qdrant accepts string UUIDs or integers. We'll use the chunk_id hash
-            # as a stable integer ID.
             point_id = _chunk_id_to_int(chunk.metadata.chunk_id)
 
             payload = {
@@ -206,15 +235,22 @@ def upsert_chunks(chunks: list[Chunk], batch_size: int = 64) -> int:
                 "source_url": chunk.metadata.source_url,
             }
 
+            # Build named vector dict
+            vector_dict = {
+                "dense": embedding.tolist(),
+            }
+            if batch_sparse is not None and i < len(batch_sparse):
+                vector_dict["sparse"] = batch_sparse[i]
+
             points.append(
                 PointStruct(
                     id=point_id,
-                    vector=embedding.tolist(),
+                    vector=vector_dict,
                     payload=payload,
                 )
             )
 
-        # Step 4: Upsert to Qdrant
+        # Step 5: Upsert to Qdrant
         client.upsert(
             collection_name=collection_name,
             points=points,
@@ -235,6 +271,29 @@ def upsert_chunks(chunks: list[Chunk], batch_size: int = 64) -> int:
         elapsed,
     )
     return total_upserted
+
+
+def _build_query_filter(
+    ticker_filter: Optional[str] = None,
+    doc_type_filter: Optional[str] = None,
+) -> Optional[Filter]:
+    """
+    Build a Qdrant filter from optional ticker and doc_type constraints.
+
+    WHY extracted to a helper:
+    - Both search_dense and search_sparse need the same filter logic.
+    - DRY principle: one place to maintain filter construction.
+    """
+    must_conditions = []
+    if ticker_filter:
+        must_conditions.append(
+            FieldCondition(key="ticker", match=MatchValue(value=ticker_filter))
+        )
+    if doc_type_filter:
+        must_conditions.append(
+            FieldCondition(key="doc_type", match=MatchValue(value=doc_type_filter))
+        )
+    return Filter(must=must_conditions) if must_conditions else None
 
 
 def search_dense(
@@ -268,27 +327,17 @@ def search_dense(
     client = get_qdrant_client()
     collection_name = settings.qdrant_collection_name
 
-    # Build filter conditions
-    must_conditions = []
-    if ticker_filter:
-        must_conditions.append(
-            FieldCondition(key="ticker", match=MatchValue(value=ticker_filter))
-        )
-    if doc_type_filter:
-        must_conditions.append(
-            FieldCondition(key="doc_type", match=MatchValue(value=doc_type_filter))
-        )
-
-    query_filter = Filter(must=must_conditions) if must_conditions else None
+    query_filter = _build_query_filter(ticker_filter, doc_type_filter)
 
     # Embed the query
     query_vector = embed_query(query)
 
-    # Search Qdrant
+    # Search Qdrant using the named "dense" vector
     start = time.time()
     results = client.query_points(
         collection_name=collection_name,
         query=query_vector.tolist(),
+        using="dense",
         query_filter=query_filter,
         limit=top_k,
         with_payload=True,
@@ -302,9 +351,87 @@ def search_dense(
         elapsed * 1000,
     )
 
-    # Convert to our SearchResult schema
+    return _points_to_search_results(results.points)
+
+
+def search_sparse(
+    query: str,
+    top_k: int = 10,
+    ticker_filter: Optional[str] = None,
+    doc_type_filter: Optional[str] = None,
+) -> list[SearchResult]:
+    """
+    Perform sparse (BM25 keyword) vector search.
+
+    Steps:
+    1. Encode the query as a BM25-weighted sparse vector (IDF weights).
+    2. Search Qdrant using the named "sparse" vector.
+    3. Qdrant computes dot product of query sparse vector with stored
+       document sparse vectors → equivalent to BM25 scoring.
+    4. Convert results to SearchResult objects.
+
+    Args:
+        query: Natural language search query.
+        top_k: Number of results to return.
+        ticker_filter: If set, only return chunks from this ticker.
+        doc_type_filter: If set, only return chunks of this document type.
+
+    Returns:
+        List of SearchResult objects sorted by BM25 relevance (highest first).
+
+    WHY sparse search alongside dense:
+    - Dense search excels at semantic similarity ("revenue growth" matches
+      "top-line expansion") but can miss exact terms ("Item 1A", "10-K/A").
+    - Sparse search captures exact keyword matches and is especially strong
+      for financial jargon, ticker symbols, and regulatory section headers.
+    - Together (via RRF fusion), they cover both semantic and lexical relevance.
+    """
+    from app.retrieval.sparse import encode_sparse_query
+
+    client = get_qdrant_client()
+    collection_name = settings.qdrant_collection_name
+
+    query_filter = _build_query_filter(ticker_filter, doc_type_filter)
+
+    # Encode query as sparse vector
+    sparse_query = encode_sparse_query(query)
+
+    if not sparse_query.indices:
+        logger.warning("Sparse query produced no terms for: '%s'", query[:50])
+        return []
+
+    # Search Qdrant using the named "sparse" vector
+    start = time.time()
+    results = client.query_points(
+        collection_name=collection_name,
+        query=sparse_query,
+        using="sparse",
+        query_filter=query_filter,
+        limit=top_k,
+        with_payload=True,
+    )
+    elapsed = time.time() - start
+
+    logger.info(
+        "Sparse search for '%s' returned %d results in %.2fms",
+        query[:50],
+        len(results.points),
+        elapsed * 1000,
+    )
+
+    return _points_to_search_results(results.points)
+
+
+def _points_to_search_results(points: list) -> list[SearchResult]:
+    """
+    Convert Qdrant query result points to SearchResult objects.
+
+    WHY extracted to a helper:
+    - Both search_dense and search_sparse produce points with the same payload
+      schema. This avoids duplicating the conversion logic.
+    """
     search_results = []
-    for point in results.points:
+    for point in points:
         payload = point.payload or {}
         search_results.append(
             SearchResult(
@@ -318,7 +445,6 @@ def search_dense(
                 },
             )
         )
-
     return search_results
 
 

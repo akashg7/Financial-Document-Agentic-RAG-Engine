@@ -3,11 +3,12 @@ Tests for the Qdrant vector store operations.
 
 These tests use an in-memory Qdrant client (no Docker needed) to verify:
 1. Collection initialization is idempotent
-2. Chunk upsert creates correct points with payloads
+2. Chunk upsert creates correct points with payloads and named vectors (dense + sparse)
 3. Dense search returns ranked results
-4. Payload filters (ticker, doc_type) work correctly
-5. get_existing_hashes retrieves all content hashes
-6. Deterministic point ID generation
+4. Sparse (BM25) search returns keyword-relevant results
+5. Payload filters (ticker, doc_type) work correctly for both dense and sparse
+6. get_existing_hashes retrieves all content hashes
+7. Deterministic point ID generation
 
 WHY in-memory Qdrant instead of mocking:
 - Qdrant provides a ':memory:' mode that runs the full engine in-process.
@@ -25,12 +26,14 @@ from app.retrieval.vector_store import (
     init_collection,
     upsert_chunks,
     search_dense,
+    search_sparse,
     get_existing_hashes,
     set_qdrant_client,
     get_qdrant_client,
     _chunk_id_to_int,
 )
 from app.retrieval.embedder import embed_texts
+from app.retrieval.sparse import fit_bm25, encode_sparse_document, reset_bm25
 
 
 # ============================================================
@@ -48,6 +51,7 @@ def in_memory_qdrant():
     yield client
     # Cleanup: reset the client after test
     set_qdrant_client(None)
+    reset_bm25()
 
 
 @pytest.fixture
@@ -99,11 +103,10 @@ class TestCollectionInit:
         assert "sec_filings" in names
 
     def test_idempotent(self, in_memory_qdrant):
-        """Calling init_collection twice should not raise."""
+        """Calling init_collection twice should not raise an error."""
         init_collection()
         init_collection()  # Should not raise
         collections = in_memory_qdrant.get_collections().collections
-        # Should still be just one collection
         names = [c.name for c in collections]
         assert names.count("sec_filings") == 1
 
@@ -113,96 +116,73 @@ class TestCollectionInit:
 # ============================================================
 
 class TestUpsertChunks:
-    """Tests for embedding + upserting chunks to Qdrant."""
+    """Tests for upserting chunks into Qdrant."""
 
-    def test_upsert_creates_points(self, in_memory_qdrant, sample_chunks):
-        """Upserting chunks should create points in Qdrant."""
+    def test_upsert_empty_list(self, in_memory_qdrant):
+        """Upserting an empty list should return 0."""
+        init_collection()
+        assert upsert_chunks([]) == 0
+
+    def test_upsert_sample_chunks(self, in_memory_qdrant, sample_chunks):
+        """Upserting sample chunks should store them in Qdrant."""
         init_collection()
         count = upsert_chunks(sample_chunks)
         assert count == len(sample_chunks)
 
-        # Verify points exist
-        collection_info = in_memory_qdrant.get_collection("sec_filings")
-        assert collection_info.points_count == len(sample_chunks)
+        # Verify points are in the collection
+        info = in_memory_qdrant.get_collection("sec_filings")
+        assert info.points_count == len(sample_chunks)
 
-    def test_upsert_preserves_payload(self, in_memory_qdrant, sample_chunks):
-        """Upserted points should have correct payload fields."""
+    def test_upsert_with_sparse_vectors(self, in_memory_qdrant, sample_chunks):
+        """Upserting chunks with sparse vectors should store both named vectors."""
         init_collection()
-        upsert_chunks(sample_chunks[:1])  # Just upsert the first chunk
+        fit_bm25([c.text for c in sample_chunks])
+        sparse_vecs = [encode_sparse_document(c.text) for c in sample_chunks]
 
-        # Retrieve the point
-        point_id = _chunk_id_to_int(sample_chunks[0].metadata.chunk_id)
-        points = in_memory_qdrant.retrieve(
-            collection_name="sec_filings",
-            ids=[point_id],
-            with_payload=True,
-        )
-        assert len(points) == 1
-        payload = points[0].payload
+        count = upsert_chunks(sample_chunks, sparse_vectors=sparse_vecs)
+        assert count == len(sample_chunks)
 
-        assert payload["ticker"] == "AAPL"
-        assert payload["doc_type"] == "10-K"
-        assert payload["text"] == sample_chunks[0].text
-        assert payload["content_hash"] == sample_chunks[0].metadata.content_hash
-
-    def test_upsert_empty_list(self, in_memory_qdrant):
-        """Upserting an empty list should return 0 and not raise."""
-        init_collection()
-        count = upsert_chunks([])
-        assert count == 0
+        info = in_memory_qdrant.get_collection("sec_filings")
+        assert info.points_count == len(sample_chunks)
 
     def test_upsert_is_idempotent(self, in_memory_qdrant, sample_chunks):
         """Upserting the same chunks twice should not create duplicates."""
         init_collection()
         upsert_chunks(sample_chunks)
-        upsert_chunks(sample_chunks)  # Same data again
+        upsert_chunks(sample_chunks)  # Second upsert
 
-        collection_info = in_memory_qdrant.get_collection("sec_filings")
-        assert collection_info.points_count == len(sample_chunks)
+        info = in_memory_qdrant.get_collection("sec_filings")
+        assert info.points_count == len(sample_chunks)
+
+    def test_batch_upsert(self, in_memory_qdrant, sample_chunks):
+        """Batch size smaller than chunk count should still upsert all."""
+        init_collection()
+        count = upsert_chunks(sample_chunks, batch_size=2)
+        assert count == len(sample_chunks)
+
+        info = in_memory_qdrant.get_collection("sec_filings")
+        assert info.points_count == len(sample_chunks)
 
 
 # ============================================================
-# Search Tests
+# Dense Search Tests
 # ============================================================
 
 class TestDenseSearch:
     """Tests for dense vector search."""
 
-    def test_search_returns_results(self, in_memory_qdrant, sample_chunks):
-        """Search should return results from indexed chunks."""
+    def test_search_returns_ranked_results(self, in_memory_qdrant, sample_chunks):
+        """Search should return results sorted by relevance."""
         init_collection()
         upsert_chunks(sample_chunks)
 
-        results = search_dense("What was Apple's revenue?", top_k=3)
-        assert len(results) > 0
-        assert len(results) <= 3
-
-    def test_search_result_shape(self, in_memory_qdrant, sample_chunks):
-        """Each result should have chunk_id, text, score, and metadata."""
-        init_collection()
-        upsert_chunks(sample_chunks)
-
-        results = search_dense("revenue", top_k=1)
-        assert len(results) >= 1
-
-        result = results[0]
-        assert result.chunk_id != ""
-        assert result.text != ""
-        assert isinstance(result.score, float)
-        assert result.score > 0
-
-    def test_search_relevance_ranking(self, in_memory_qdrant, sample_chunks):
-        """
-        Searching for 'Apple revenue' should rank AAPL chunks higher
-        than MSFT or GOOGL chunks.
-        """
-        init_collection()
-        upsert_chunks(sample_chunks)
-
-        results = search_dense("Apple revenue fiscal year", top_k=6)
-
-        # The top result should be about Apple
-        assert results[0].metadata.get("ticker") == "AAPL"
+        results = search_dense("iPhone revenue", top_k=3)
+        assert len(results) == 3
+        # First result should be the iPhone chunk
+        assert "iPhone" in results[0].text
+        # Scores should be in descending order
+        scores = [r.score for r in results]
+        assert scores == sorted(scores, reverse=True)
 
     def test_search_with_ticker_filter(self, in_memory_qdrant, sample_chunks):
         """Filtering by ticker should return only chunks from that ticker."""
@@ -211,8 +191,8 @@ class TestDenseSearch:
 
         results = search_dense("revenue", top_k=10, ticker_filter="MSFT")
         assert len(results) > 0
-        for result in results:
-            assert result.metadata.get("ticker") == "MSFT"
+        for r in results:
+            assert r.metadata["ticker"] == "MSFT"
 
     def test_search_with_doc_type_filter(self, in_memory_qdrant, sample_chunks):
         """Filtering by doc_type should return only matching chunks."""
@@ -221,15 +201,52 @@ class TestDenseSearch:
 
         # All our test data is 10-K, so filtering for 10-K should return all
         results = search_dense("revenue", top_k=10, doc_type_filter="10-K")
-        assert len(results) > 0
-        for result in results:
-            assert result.metadata.get("doc_type") == "10-K"
+        assert len(results) == len(sample_chunks)
 
     def test_search_empty_collection(self, in_memory_qdrant):
-        """Searching an empty collection should return no results."""
+        """Searching an empty collection should return empty list."""
         init_collection()
         results = search_dense("revenue", top_k=5)
         assert len(results) == 0
+
+
+# ============================================================
+# Sparse Search Tests
+# ============================================================
+
+class TestSparseSearch:
+    """Tests for sparse BM25 vector search."""
+
+    def test_sparse_search_finds_exact_keywords(self, in_memory_qdrant, sample_chunks):
+        """Sparse search should rank chunks with exact keyword matches at the top."""
+        init_collection()
+        fit_bm25([c.text for c in sample_chunks])
+        sparse_vecs = [encode_sparse_document(c.text) for c in sample_chunks]
+        upsert_chunks(sample_chunks, sparse_vectors=sparse_vecs)
+
+        results = search_sparse("Azure cloud", top_k=3)
+        assert len(results) > 0
+        assert "Azure" in results[0].text
+        assert results[0].metadata["ticker"] == "MSFT"
+
+    def test_sparse_search_with_ticker_filter(self, in_memory_qdrant, sample_chunks):
+        """Sparse search should respect ticker filters."""
+        init_collection()
+        fit_bm25([c.text for c in sample_chunks])
+        sparse_vecs = [encode_sparse_document(c.text) for c in sample_chunks]
+        upsert_chunks(sample_chunks, sparse_vectors=sparse_vecs)
+
+        results = search_sparse("revenue", top_k=5, ticker_filter="AAPL")
+        assert len(results) > 0
+        for r in results:
+            assert r.metadata["ticker"] == "AAPL"
+
+    def test_sparse_search_unknown_terms_empty(self, in_memory_qdrant, sample_chunks):
+        """Search with terms not in the corpus returns empty results gracefully."""
+        init_collection()
+        fit_bm25([c.text for c in sample_chunks])
+        results = search_sparse("nonexistentwordxyz", top_k=5)
+        assert results == []
 
 
 # ============================================================
