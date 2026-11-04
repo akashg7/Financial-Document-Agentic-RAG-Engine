@@ -226,3 +226,55 @@ Every major tradeoff is recorded here with: the decision, why, what alternatives
 **When I'd change it**: If collision rates in massive corpora (>10M unique terms) degrade precision, in which case we would migrate to 64-bit sparse vector indices if supported by the vector database.
 
 
+---
+
+## Decision 14: Cross-Encoder Model Selection (`cross-encoder/ms-marco-MiniLM-L-6-v2`)
+
+**Decision**: Use `cross-encoder/ms-marco-MiniLM-L-6-v2` as our local CPU reranker rather than proprietary API rerankers (Cohere Rerank, Voyage Rerank) or heavier cross-encoder models (e.g., `cross-encoder/ms-marco-electra-base`, BGE-Reranker-Large).
+
+**Why**:
+- Strict zero-cost constraint: No API tokens, keys, or rate limits. Fully self-hosted and offline-capable.
+- Memory and latency budget: Model size is ~80MB, easily residing in RAM alongside the dense embedding model (`all-MiniLM-L6-v2`).
+- Inference efficiency on CPU: Evaluates a 50-pair candidate batch in ~30–60ms on modern CPU without requiring a dedicated CUDA GPU.
+- High empirical quality: Fine-tuned on the 500k+ query MS MARCO passage ranking dataset; captures deep token-to-token cross-attention between query and candidate passage.
+
+**Alternatives**:
+- Cohere Rerank API: Industry gold standard for reranking quality, but incurs monetary cost ($1/1,000 searches) and network egress latency (150–300ms network round-trip).
+- `BAAI/bge-reranker-large`: Exceptional performance on MTEB benchmarks, but ~1.3GB model size causes substantial CPU latency (>1.5s per batch of 50) without a GPU.
+- ColBERTv2 (Late Interaction): Fast token-level max-sim scoring, but requires specialized index storage (substantially larger than standard vector stores) and complex deployment.
+
+**When I'd change it**: If moving to a production GPU cluster with dedicated inference endpoints (e.g. Triton/vLLM/TEI) where `bge-reranker-large` or `mixedbread-ai/mxbai-rerank-large` can run in under 20ms.
+
+---
+
+## Decision 15: Two-Stage Retrieval with Top-50 Candidate Pool for Reranking
+
+**Decision**: First-stage retrieval retrieves up to 50 candidates via hybrid search (dense + BM25 with RRF), and feeds this candidate pool into the cross-encoder to produce the final top-$K$ (e.g., top 5 or 10).
+
+**Why**:
+- Algorithmic complexity decoupling: Bi-encoder vector search is $O(1)$ amortized with HNSW indexing; cross-encoder inference is $O(N \cdot L^2)$ where $N$ is candidate count and $L$ is sequence length.
+- Diminishing returns beyond 50: In financial RAG, high-recall first-stage retrieval (dense + sparse) almost always places relevant documents within the top 50 (Recall@50 typically $> 95\%$). Expanding to top 100 or 200 doubles inference latency with negligible recall upside.
+- Context window economics: Downstream LLMs typically ingest 3–7 chunks. Reranking 50 candidates down to top 5 strikes the optimal Pareto balance between candidate coverage and execution latency.
+
+**Alternatives**:
+- Rerank top 10 only: Faster (~10ms CPU inference), but risks missing relevant passages that ranked between 11 and 50 during first-stage hybrid retrieval.
+- Rerank top 200: Maximizes recall ceiling, but inflates CPU latency to $> 1$ second, exceeding acceptable latency budgets for interactive queries.
+
+**When I'd change it**: If golden set evaluation reveals that critical evidence frequently falls between ranks 51–100, or if hardware acceleration permits evaluating 100+ candidates in under 30ms.
+
+---
+
+## Decision 16: Golden Evaluation Set Design with Explicit Hard Unanswerable Questions
+
+**Decision**: Construct a 119-question curated golden evaluation set across 6 categories (`financial_metric`, `risk_factor`, `strategy`, `comparison`, `temporal`, `unanswerable`) spanning multiple SEC filings and tickers, with ~17% (20 questions) deliberately designed as unanswerable.
+
+**Why**:
+- Guarding against hallucinations: In financial domains, hallucinating a metric or forward-looking guidance is catastrophic. A rigorous evaluation framework must test the system's ability to abstain when evidence is absent, rather than only testing its ability to retrieve when evidence exists.
+- Categorical diagnostic power: Grouping queries into categories enables isolating retrieval failures (e.g., does sparse fail on temporal queries? does dense fail on exact metric tables?).
+- Reproducibility and honesty: Having an offline golden dataset with ground-truth answer expectations and explicit difficulty tags enables automated, regression-proof benchmarking without fabricating numbers.
+
+**Alternatives**:
+- Synthetic automated QA generation (e.g., GPT-4 generating QA pairs from raw text): High volume, but tends to produce surface-level questions with obvious lexical overlap that artificially inflate retrieval scores.
+- RAGAS-only evaluation: Powerful for end-to-end generation metrics, but does not provide controlled ground-truth chunk rankings for retrieval-stage component benchmarking.
+
+**When I'd change it**: When expanding the corpus to hundreds of company filings on Day 10, where we augment the human-curated golden set with semi-automated domain-expert verified questions.

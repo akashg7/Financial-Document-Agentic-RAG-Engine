@@ -39,9 +39,9 @@ See [docs/architecture.md](docs/architecture.md) for diagrams.
 ## Project Status
 
 - [x] Day 1: Repo, Docker, config, loaders, chunker, dedup
-- [ ] Day 2: Embeddings, Qdrant upsert, /search/dense
-- [ ] Day 3: Sparse/BM25, RRF, /search/hybrid
-- [ ] Day 4: Cross-encoder rerank, golden set, benchmarks
+- [x] Day 2: Embeddings, Qdrant upsert, /search/dense
+- [x] Day 3: Sparse/BM25, RRF, /search/hybrid
+- [x] Day 4: Cross-encoder rerank, golden set, benchmarks
 - [ ] Day 5: LLM client, citations, validation
 - [ ] Day 6: Confidence scorer, threshold tuning
 - [ ] Day 7: LangGraph agent (generate/rewrite/abstain)
