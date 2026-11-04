@@ -14,6 +14,9 @@ Day 2 additions:
 Day 3 additions:
 - POST /search/sparse returns BM25 keyword search results
 - POST /search/hybrid returns RRF-fused results
+
+Day 4 additions:
+- POST /search/rerank returns hybrid + cross-encoder reranked results
 """
 
 import hashlib
@@ -290,3 +293,76 @@ class TestHybridSearchEndpoint:
             assert data["results"][0]["score"] > 0
         finally:
             set_qdrant_client(None)
+
+
+
+class TestRerankSearchEndpoint:
+    """Tests for POST /api/v1/search/rerank."""
+
+    @pytest.mark.asyncio
+    async def test_rerank_search_returns_reranked_results(self, client):
+        """Rerank search endpoint returns hybrid results reranked by cross-encoder."""
+        from qdrant_client import QdrantClient
+        from app.retrieval.vector_store import set_qdrant_client, init_collection, upsert_chunks
+        from app.retrieval.sparse import fit_bm25, encode_sparse_document
+        from app.schemas import Chunk, ChunkMetadata, DocumentType
+
+        memory_client = QdrantClient(":memory:")
+        set_qdrant_client(memory_client)
+        init_collection()
+
+        text_rev = "Apple reported revenue of $383 billion for fiscal year 2023."
+        text_div = "The board declared a quarterly cash dividend of $0.24 per share."
+        fit_bm25([text_rev, text_div])
+
+        chunk_rev = Chunk(
+            text=text_rev,
+            metadata=ChunkMetadata(
+                chunk_id="AAPL_10-K_2023_chunk_0000",
+                doc_id="AAPL_10-K_2023",
+                doc_type=DocumentType.SEC_10K,
+                ticker="AAPL",
+                chunk_index=0,
+                content_hash=hashlib.sha256(text_rev.encode()).hexdigest(),
+            ),
+        )
+        chunk_div = Chunk(
+            text=text_div,
+            metadata=ChunkMetadata(
+                chunk_id="AAPL_10-K_2023_chunk_0001",
+                doc_id="AAPL_10-K_2023",
+                doc_type=DocumentType.SEC_10K,
+                ticker="AAPL",
+                chunk_index=1,
+                content_hash=hashlib.sha256(text_div.encode()).hexdigest(),
+            ),
+        )
+        upsert_chunks(
+            [chunk_rev, chunk_div],
+            sparse_vectors=[encode_sparse_document(text_rev), encode_sparse_document(text_div)],
+        )
+
+        try:
+            resp = await client.post(
+                "/api/v1/search/rerank",
+                json={"query": "Apple total revenue for 2023", "top_k": 2},
+            )
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["retrieval_method"] == "hybrid+rerank"
+            assert len(data["results"]) >= 1
+            # Top result should be the revenue chunk
+            assert data["results"][0]["chunk_id"] == "AAPL_10-K_2023_chunk_0000"
+            assert "rerank_score" in data["results"][0]["metadata"]
+            assert "retrieval_score" in data["results"][0]["metadata"]
+        finally:
+            set_qdrant_client(None)
+
+    @pytest.mark.asyncio
+    async def test_rerank_search_validation_fails_without_query(self, client):
+        """Missing query returns 422."""
+        resp = await client.post(
+            "/api/v1/search/rerank",
+            json={"top_k": 5},
+        )
+        assert resp.status_code == 422

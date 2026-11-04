@@ -6,6 +6,7 @@ Day 2: added POST /search/dense for semantic vector search,
        swapped in-memory job store for Redis-backed store.
 Day 3: added POST /search/sparse for BM25 keyword search,
        added POST /search/hybrid for RRF-fused dense+sparse search.
+Day 4: added POST /search/rerank for hybrid + cross-encoder reranking.
 """
 
 import time
@@ -221,5 +222,75 @@ async def hybrid_search(request: SearchRequest):
         query=request.query,
         results=fused_results,
         retrieval_method="hybrid",
+        latency_ms=round(latency_ms, 2),
+    )
+
+
+
+@router.post("/search/rerank", response_model=SearchResponse, tags=["search"])
+async def rerank_search(request: SearchRequest):
+    """
+    Two-stage retrieval: hybrid search (dense + sparse + RRF) → cross-encoder rerank.
+
+    HOW IT WORKS:
+    1. Hybrid search retrieves top 50 candidates (over-retrieval pool).
+    2. Cross-encoder scores each (query, chunk) pair jointly through all
+       attention layers — much more accurate than bi-encoder similarity.
+    3. Return the top_k reranked results.
+
+    WHY 50 candidates for reranking:
+    - Cross-encoder inference scales linearly with candidate count.
+      50 pairs on the ms-marco-MiniLM model takes ~50-200 ms on CPU,
+      which keeps total latency under 1 second.
+    - Beyond 50, we see diminishing recall gains but linear cost increase.
+
+    WHY a separate endpoint instead of a flag on /search/hybrid:
+    - Keeps the benchmark script clean: each retrieval strategy has its own
+      endpoint, making A/B comparison straightforward.
+    - The /query endpoint (Day 7) will use rerank internally.
+    """
+    from app.retrieval.vector_store import search_dense, search_sparse
+    from app.retrieval.rrf import reciprocal_rank_fusion
+    from app.rerank.reranker import rerank
+
+    start = time.time()
+
+    # Stage 1: Hybrid search — over-retrieve 50 candidates for the reranker
+    retrieval_k = 50
+
+    dense_results = search_dense(
+        query=request.query,
+        top_k=retrieval_k,
+        ticker_filter=request.ticker_filter,
+        doc_type_filter=request.doc_type_filter.value if request.doc_type_filter else None,
+    )
+
+    sparse_results = search_sparse(
+        query=request.query,
+        top_k=retrieval_k,
+        ticker_filter=request.ticker_filter,
+        doc_type_filter=request.doc_type_filter.value if request.doc_type_filter else None,
+    )
+
+    # Fuse with RRF — keep all 50 candidates for the cross-encoder
+    fused_results = reciprocal_rank_fusion(
+        [dense_results, sparse_results],
+        k=60,
+        top_n=retrieval_k,
+    )
+
+    # Stage 2: Cross-encoder reranking — precise scoring of each candidate
+    reranked_results = rerank(
+        query=request.query,
+        results=fused_results,
+        top_k=request.top_k,
+    )
+
+    latency_ms = (time.time() - start) * 1000
+
+    return SearchResponse(
+        query=request.query,
+        results=reranked_results,
+        retrieval_method="hybrid+rerank",
         latency_ms=round(latency_ms, 2),
     )
