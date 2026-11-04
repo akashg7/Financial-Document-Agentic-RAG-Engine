@@ -1,0 +1,31 @@
+{
+  "timestamp": "20261104T183259Z",
+  "benchmark_type": "vector_vs_hybrid_vs_rerank",
+  "num_cases": 10,
+  "strategies": {
+    "vector_only": {
+      "recall_at_5": 0.7833333333333333,
+      "recall_at_10": 1.0,
+      "mrr": 0.9166666666666666,
+      "latency_mean_ms": 30.099933498422615,
+      "latency_p50_ms": 20.16412500233855,
+      "latency_p95_ms": 118.75854199752212
+    },
+    "hybrid": {
+      "recall_at_5": 0.7833333333333333,
+      "recall_at_10": 1.0,
+      "mrr": 0.9166666666666666,
+      "latency_mean_ms": 14.20084999408573,
+      "latency_p50_ms": 13.828812981955707,
+      "latency_p95_ms": 16.494624986080453
+    },
+    "hybrid_rerank": {
+      "recall_at_5": 0.7333333333333333,
+      "recall_at_10": 1.0,
+      "mrr": 0.8833333333333333,
+      "latency_mean_ms": 273.9893414982362,
+      "latency_p50_ms": 35.94377152330708,
+      "latency_p95_ms": 2393.5910009604413
+    }
+  }
+}
