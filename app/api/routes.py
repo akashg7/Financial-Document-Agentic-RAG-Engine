@@ -7,6 +7,7 @@ Day 2: added POST /search/dense for semantic vector search,
 Day 3: added POST /search/sparse for BM25 keyword search,
        added POST /search/hybrid for RRF-fused dense+sparse search.
 Day 4: added POST /search/rerank for hybrid + cross-encoder reranking.
+Day 5: added POST /generate for grounded question answering with verified citations.
 """
 
 import time
@@ -23,6 +24,8 @@ from app.schemas import (
     JobStatus,
     SearchRequest,
     SearchResponse,
+    GenerateRequest,
+    AnswerResponse,
 )
 from app.ingestion.pipeline import run_ingestion_pipeline
 from app.ingestion.redis_job_store import get_job, set_job
@@ -294,3 +297,73 @@ async def rerank_search(request: SearchRequest):
         retrieval_method="hybrid+rerank",
         latency_ms=round(latency_ms, 2),
     )
+
+
+
+@router.post("/generate", response_model=AnswerResponse, tags=["generation"])
+async def generate_answer(request: GenerateRequest):
+    """
+    Generate a grounded answer to a financial question with citation binding.
+
+    HOW IT WORKS:
+    1. Retrieve candidates via hybrid search (dense + sparse + RRF).
+    2. Rerank candidates with the cross-encoder to select the highest-precision chunks.
+    3. Construct a grounded context prompt with explicit chunk IDs.
+    4. Call the LLM (Groq primary with automatic Gemini fallback).
+    5. Validate all output citations: verify chunk ID exists and quote matches verbatim.
+    6. Return AnswerResponse with verified citations and confidence score.
+
+    WHY validate citations at the API boundary:
+    - Guarantees the caller never receives fabricated chunk IDs or hallucinated quotes.
+    - If evidence is weak or missing, the response explicitly signals "abstain".
+    """
+    from app.retrieval.vector_store import search_dense, search_sparse
+    from app.retrieval.rrf import reciprocal_rank_fusion
+    from app.rerank.reranker import rerank
+    from app.llm.client import get_llm_client
+
+    start = time.time()
+
+    # Stage 1: Over-retrieve candidates via hybrid search
+    retrieval_k = min(max(request.top_k * 4, 20), 50)
+    ticker_val = request.ticker_filter
+    doc_type_val = request.doc_type_filter.value if request.doc_type_filter else None
+
+    dense_results = search_dense(
+        query=request.query,
+        top_k=retrieval_k,
+        ticker_filter=ticker_val,
+        doc_type_filter=doc_type_val,
+    )
+
+    sparse_results = search_sparse(
+        query=request.query,
+        top_k=retrieval_k,
+        ticker_filter=ticker_val,
+        doc_type_filter=doc_type_val,
+    )
+
+    fused_results = reciprocal_rank_fusion(
+        [dense_results, sparse_results],
+        k=60,
+        top_n=retrieval_k,
+    )
+
+    # Stage 2: Neural rerank to extract the best top_k chunks
+    top_chunks = rerank(
+        query=request.query,
+        results=fused_results,
+        top_k=request.top_k,
+    )
+
+    # Stage 3: Grounded LLM generation & citation validation
+    client = get_llm_client()
+    answer_resp = client.answer_query(
+        query=request.query,
+        context_chunks=top_chunks,
+    )
+
+    total_latency_ms = (time.time() - start) * 1000
+    answer_resp.latency_ms = round(total_latency_ms, 2)
+
+    return answer_resp

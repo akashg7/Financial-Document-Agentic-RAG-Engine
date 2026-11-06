@@ -17,6 +17,9 @@ Day 3 additions:
 
 Day 4 additions:
 - POST /search/rerank returns hybrid + cross-encoder reranked results
+
+Day 5 additions:
+- POST /generate returns grounded answer with validated citations
 """
 
 import hashlib
@@ -365,4 +368,59 @@ class TestRerankSearchEndpoint:
             "/api/v1/search/rerank",
             json={"top_k": 5},
         )
+        assert resp.status_code == 422
+
+
+
+class TestGenerateEndpoint:
+    """Tests for POST /api/v1/generate."""
+
+    @pytest.mark.asyncio
+    async def test_generate_answer_returns_grounded_response(self, client):
+        """Generate endpoint runs retrieval, grounded generation, and citation validation."""
+        from qdrant_client import QdrantClient
+        from app.retrieval.vector_store import set_qdrant_client, init_collection, upsert_chunks
+        from app.retrieval.sparse import fit_bm25, encode_sparse_document
+        from app.schemas import Chunk, ChunkMetadata, DocumentType
+
+        memory_client = QdrantClient(":memory:")
+        set_qdrant_client(memory_client)
+        init_collection()
+
+        text = "Apple reported net sales of $383.3 billion for fiscal year 2023."
+        fit_bm25([text])
+        chunk = Chunk(
+            text=text,
+            metadata=ChunkMetadata(
+                chunk_id="AAPL_10-K_2023_chunk_0000",
+                doc_id="AAPL_10-K_2023",
+                doc_type=DocumentType.SEC_10K,
+                ticker="AAPL",
+                chunk_index=0,
+                content_hash=hashlib.sha256(text.encode()).hexdigest(),
+            ),
+        )
+        upsert_chunks([chunk], sparse_vectors=[encode_sparse_document(text)])
+
+        try:
+            resp = await client.post(
+                "/api/v1/generate",
+                json={"query": "What was Apple's net sales in fiscal 2023?", "top_k": 2},
+            )
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["query"] == "What was Apple's net sales in fiscal 2023?"
+            assert "answer" in data
+            assert len(data["answer"]) > 0
+            assert "citations" in data
+            assert data["decision"] in ["generate", "abstain"]
+            assert 0.0 <= data["confidence"] <= 1.0
+            assert data["latency_ms"] >= 0.0
+        finally:
+            set_qdrant_client(None)
+
+    @pytest.mark.asyncio
+    async def test_generate_answer_missing_query_fails(self, client):
+        """POST /generate without query returns 422 validation error."""
+        resp = await client.post("/api/v1/generate", json={})
         assert resp.status_code == 422
