@@ -254,3 +254,4 @@ Lazy loading guarantees zero startup overhead until retrieval or reranking is ac
 2. **Nogueira & Cho (2019)**: *"Passage Re-ranking with BERT"* — First demonstration of multi-stage neural reranking on TREC / MS MARCO.
 3. **Liu et al. (2023)**: *"Lost in the Middle: How Language Models Use Long Contexts"* — Empirical proof of why ranking position (MRR) dictates downstream LLM hallucination rates.
 4. **Cormack, Clarke, & Büttcher (2009)**: *"Reciprocal Rank Fusion Outperforms Condorcet and Individual Rank Learning Methods"* — Mathematical foundations of RRF.
+
