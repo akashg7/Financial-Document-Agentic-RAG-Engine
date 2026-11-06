@@ -278,3 +278,55 @@ Every major tradeoff is recorded here with: the decision, why, what alternatives
 - RAGAS-only evaluation: Powerful for end-to-end generation metrics, but does not provide controlled ground-truth chunk rankings for retrieval-stage component benchmarking.
 
 **When I'd change it**: When expanding the corpus to hundreds of company filings on Day 10, where we augment the human-curated golden set with semi-automated domain-expert verified questions.
+---
+
+## Decision 17: Multi-Provider LLM Architecture (Groq Primary with Gemini Fallback)
+
+**Decision**: Route primary generation through Groq (`llama-3.1-8b-instant`) with automatic failover to Google Gemini (`gemini-1.5-flash`), backed by a deterministic offline mock generator.
+
+**Why**:
+- Zero-cost SLA resilience: Both Groq and Gemini provide generous free tiers, but have stringent rate limits (Groq: 30 RPM; Gemini: 15 RPM). Coupling them in an active-standby failover pattern allows the engine to absorb traffic bursts without paying for dedicated inference or dropping user requests.
+- Latency optimization: Groq's LPU architecture delivers ~500–700 tokens/second on `llama-3.1-8b-instant`, producing complete grounded financial answers in under 400ms.
+- High-availability redundancy: Running across two distinct cloud providers (Groq and Google Cloud) eliminates dependency on any single provider's availability.
+
+**Alternatives**:
+- Single provider with retries only: Simpler, but a rate-limit exhaustion (429) or cloud outage halts the entire service until quotas reset.
+- OpenAI GPT-4o / GPT-4o-mini: High quality, but violates our zero-cost constraint.
+- Local Ollama / vLLM: Zero API cost, but running 8B+ models locally requires 16GB+ unified RAM and competes for CPU/GPU resources with our embedding and reranking models.
+
+**When I'd change it**: In an enterprise production setting with dedicated API budgets, where we would use paid Groq/Gemini tiers or self-hosted vLLM inference on a Kubernetes GPU cluster.
+
+---
+
+## Decision 18: Grounded Citation Binding & Two-Tier Quote Verification
+
+**Decision**: Force the LLM to output structured JSON with explicit citations referencing `chunk_id` and verbatim `quote`, verified via a deterministic two-tier validator:
+1. Tier 1: Target `chunk_id` must exist in the retrieved context pool passed into the prompt.
+2. Tier 2: The cited `quote` must match text within that chunk (verbatim or high normalized lexical overlap).
+
+**Why**:
+- Hallucination prevention: Standard LLMs frequently fabricate citations, attribute real facts to incorrect filings, or make up quotes.
+- Auditable provenance: In financial compliance and investment analysis, every metric and forward-looking disclosure must trace back to the authoritative SEC EDGAR filing or earnings call transcript.
+- Confidence calibration: Unverified citations directly downgrade the response confidence score and trigger filtering, preventing false evidence from polluting client applications.
+
+**Alternatives**:
+- Unstructured inline markdown citations (e.g. `[1]`): Fragile to parse and prone to hallucinations; difficult to verify quotes programmatically.
+- Post-hoc LLM judge for grounding: Slow and expensive; doubles token consumption by calling a second LLM to evaluate the first LLM. Deterministic string/lexical validation is $O(1)$, instantaneous, and free.
+
+**When I'd change it**: If citations frequently paraphrase long conceptual arguments rather than quoting short numerical clauses, prompting an NLI (Natural Language Inference) entailment model.
+
+---
+
+## Decision 19: Error Discrimination in Resilience Policies (Fast-Fail vs. Exponential Backoff)
+
+**Decision**: Explicitly discriminate between transient errors (`RateLimitError` 429, 5xx server hiccups) which are retried with exponential backoff (1s, 2s, 4s), and authentication/configuration errors (`AuthenticationError` 401/403, invalid key) which fail fast without retries, triggering immediate failover.
+
+**Why**:
+- Latency preservation: Retrying an invalid API key 3 times with exponential backoff wastes ~7 seconds waiting for attempts that are guaranteed to fail.
+- Resilience: Transient rate limits on free tiers typically resolve within 1–3 seconds, making backoff with jitter highly effective for 429s.
+
+**Alternatives**:
+- Generic retry on all exceptions: Catches everything, but causes unacceptable latency spikes when credentials or models are misconfigured.
+- No retries (failover on first error): Faster on permanent errors, but prematurely exhausts provider failover on single-packet network drops or 1-second burst rate limits.
+
+**When I'd change it**: When moving to an asynchronous task queue architecture (Celery/Temporal) where failed jobs can be queued for delayed replay.
