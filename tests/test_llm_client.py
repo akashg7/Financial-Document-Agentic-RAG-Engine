@@ -52,7 +52,7 @@ def test_mock_llm_client_generation(sample_chunks):
     resp = client.answer_query("What was Apple's revenue?", sample_chunks)
 
     assert resp.decision == "generate"
-    assert resp.confidence == 1.0
+    assert resp.confidence >= 0.70
     assert len(resp.citations) == 1
     assert resp.citations[0].chunk_id == "AAPL_chunk_001"
     assert "AAPL_chunk_001" in resp.answer

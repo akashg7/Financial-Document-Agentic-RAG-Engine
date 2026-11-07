@@ -78,10 +78,10 @@ class LLMClient:
         groq_model: Optional[str] = None,
         gemini_model: Optional[str] = None,
     ):
-        self.groq_api_key = groq_api_key or settings.groq_api_key
-        self.gemini_api_key = gemini_api_key or settings.gemini_api_key
-        self.groq_model = groq_model or settings.groq_model_name
-        self.gemini_model = gemini_model or settings.gemini_model_name
+        self.groq_api_key = groq_api_key if groq_api_key is not None else settings.groq_api_key
+        self.gemini_api_key = gemini_api_key if gemini_api_key is not None else settings.gemini_api_key
+        self.groq_model = groq_model if groq_model is not None else settings.groq_model_name
+        self.gemini_model = gemini_model if gemini_model is not None else settings.gemini_model_name
 
         self._groq_client = None
         self._gemini_client = None
@@ -135,9 +135,9 @@ class LLMClient:
             return response.choices[0].message.content or ""
         except Exception as e:
             err_str = str(e).lower()
-            if "invalid api key" in err_str or "invalid_api_key" in err_str or "401" in err_str or "unauthorized" in err_str:
-                logger.warning("Groq authentication failed (invalid API key). Skipping retries.")
-                raise AuthenticationError(f"Groq 401: {e}") from e
+            if "invalid api key" in err_str or "invalid_api_key" in err_str or "401" in err_str or "unauthorized" in err_str or "404" in err_str or "model_not_found" in err_str:
+                logger.warning("Groq permanent error (invalid key or model not found). Skipping retries.")
+                raise AuthenticationError(f"Groq permanent error: {e}") from e
             if "rate limit" in err_str or "429" in err_str:
                 logger.warning("Groq rate limit exceeded: %s", e)
                 raise RateLimitError(f"Groq 429: {e}") from e
@@ -163,9 +163,9 @@ class LLMClient:
             return response.text or ""
         except Exception as e:
             err_str = str(e).lower()
-            if "api key not valid" in err_str or "api_key_invalid" in err_str or "400" in err_str and "api key" in err_str or "403" in err_str:
-                logger.warning("Gemini authentication failed (invalid API key). Skipping retries.")
-                raise AuthenticationError(f"Gemini 401/403: {e}") from e
+            if "api key not valid" in err_str or "api_key_invalid" in err_str or "400" in err_str and "api key" in err_str or "403" in err_str or "404" in err_str or "not found" in err_str:
+                logger.warning("Gemini permanent error (invalid key or model not found). Skipping retries.")
+                raise AuthenticationError(f"Gemini permanent error: {e}") from e
             if "rate limit" in err_str or "429" in err_str or "resource_exhausted" in err_str:
                 logger.warning("Gemini rate limit exceeded: %s", e)
                 raise RateLimitError(f"Gemini 429: {e}") from e
@@ -303,17 +303,22 @@ class LLMClient:
         answer_text = parsed.get("answer", "")
         has_sufficient_evidence = parsed.get("has_sufficient_evidence", True)
 
-        # Determine decision: generate vs abstain
-        if not has_sufficient_evidence or "INSUFFICIENT_EVIDENCE" in answer_text.upper():
+        # Day 6: Multi-signal calibrated confidence scoring
+        from app.confidence.scorer import score_confidence
+
+        confidence_breakdown = score_confidence(
+            query=query,
+            answer=answer_text,
+            retrieved_chunks=context_chunks,
+            validation_result=val_result,
+        )
+
+        decision = confidence_breakdown.decision
+        confidence = confidence_breakdown.overall_confidence
+
+        if not has_sufficient_evidence:
             decision = "abstain"
             confidence = 0.0
-        elif not val_result.is_fully_grounded:
-            # Hallucinated citations lower confidence
-            decision = "generate"
-            confidence = round(val_result.quote_precision * 0.7 + val_result.citation_precision * 0.3, 2)
-        else:
-            decision = "generate"
-            confidence = 1.0
 
         # Filter out hallucinated citations from final response
         valid_citations = [
