@@ -330,3 +330,61 @@ Every major tradeoff is recorded here with: the decision, why, what alternatives
 - No retries (failover on first error): Faster on permanent errors, but prematurely exhausts provider failover on single-packet network drops or 1-second burst rate limits.
 
 **When I'd change it**: When moving to an asynchronous task queue architecture (Celery/Temporal) where failed jobs can be queued for delayed replay.
+---
+
+## Decision 20: Multi-Signal Confidence Fusion vs. Single-Metric Score
+
+**Decision**: Calculate confidence by fusing three orthogonal signals:
+1. Grounding Fidelity (45% weight: citation precision and verbatim quote verification)
+2. Retrieval Evidence Quality (40% weight: normalized cross-encoder logit and margin between rank #1 and #2)
+3. Linguistic Certainty (15% weight: absence of epistemic hedging phrases)
+
+**Why**:
+- Brittleness of single-vector similarity: A passage can exhibit high cosine similarity simply by containing repeated financial jargon ("EBITDA", "amortization"), even if it fails to answer the user's specific question.
+- Complementary failure modes: The cross-encoder measures semantic relevance, the citation validator enforces factual alignment, and the linguistic parser detects uncertainty emitted by the generator. Fusing all three prevents single-point-of-failure hallucinations.
+- Hard insufficiency override: If evidence is missing or the response signals `INSUFFICIENT_EVIDENCE`, the composite score is overridden to 0.0, bypassing weighted arithmetic.
+
+**Alternatives**:
+- Retrieval score only: Prone to false positives on keyword-heavy irrelevant passages.
+- LLM self-reported confidence ("Rate your confidence 1-10"): Well-documented calibration failure in LLMs; models are notoriously overconfident even when fabricating claims.
+- Perplexity / token log probabilities: Sensitive to vocabulary length and prompt phrasing; unavailable on many hosted inference endpoints (e.g. standard Gemini API).
+
+**When I'd change it**: If we fine-tune a dedicated Natural Language Inference (NLI) classifier on financial entailment datasets, replacing heuristic signal weights with learned logistic regression coefficients.
+
+---
+
+## Decision 21: Sigmoid Normalization of Cross-Encoder Logits with Score Margin Bonus
+
+**Decision**: Map unbounded cross-encoder logits ($x \in (-\infty, \infty)$) into $[0, 1]$ using standard logistic sigmoid ($\sigma(x) = \frac{1}{1 + e^{-x}}$) and add a margin bonus ($\min(0.3, \Delta_{\text{top2}} \times 0.1)$) reflecting the score gap between candidate #1 and candidate #2.
+
+**Why**:
+- Logit calibration: Cross-encoder outputs (`ms-marco-MiniLM-L-6-v2`) are unconstrained logits where $< -2$ indicates strong irrelevance, $0$ indicates neutrality, and $> 2$ indicates high relevance. Sigmoid maps this smoothly into $(0, 1)$.
+- Decisive winner vs. ambiguity: If chunk #1 scores 3.5 and chunk #2 scores 0.5 ($\Delta = 3.0$), the retrieval pool has a single authoritative winner. If chunk #1 scores 1.0 and chunk #2 scores 0.99 ($\Delta = 0.01$), the retrieval stage is ambiguous, warranting a lower retrieval signal to promote query rewriting (Day 7).
+
+**Alternatives**:
+- Min-Max scaling over the candidate batch: Highly sensitive to outliers; if all 50 chunks are irrelevant (scores between -8 and -7), min-max artificially stretches the least irrelevant chunk to 1.0.
+- Softmax across candidates: Distributes probability across all candidates, penalizing cases where multiple chunks are equally relevant.
+
+**When I'd change it**: If moving to a reranker model that outputs calibrated probabilities directly rather than raw margin logits.
+
+---
+
+## Decision 22: Tri-State Agentic Routing (`generate`, `rewrite`, `abstain`) and Calibrated Thresholds
+
+**Decision**: Calibrate decision boundaries at $\tau_{\text{generate}} = 0.70$ and $\tau_{\text{abstain}} = 0.40$:
+- $\text{Confidence} \ge 0.70 \implies \mathbf{"generate"}$
+- $0.40 \le \text{Confidence} < 0.70 \implies \mathbf{"rewrite"}$
+- $\text{Confidence} < 0.40 \implies \mathbf{"abstain"}$
+
+**Why**:
+- Empirical golden set validation: Evaluated across 119 queries in `eval/golden_set.jsonl`:
+  - 100% of unanswerable queries correctly triggered `abstain` (zero hallucination leakage).
+  - 86.9% of answerable queries generated immediately with verified citations.
+  - 10.9% of ambiguous/hard queries were routed to query rewriting (`rewrite`).
+- Agentic control flow: Rather than treating RAG as a binary pass/fail, the intermediate `rewrite` band gives the agent (Day 7 LangGraph) the opportunity to refine query keywords, expand synonyms, or adjust filters before giving up or hallucinating.
+
+**Alternatives**:
+- Binary generate vs abstain (no rewrite): Forces marginal queries to either hallucinate an answer or prematurely surrender.
+- Higher generate threshold (e.g. 0.85): Excessively conservative; abstains on valid complex queries that require slight reasoning.
+
+**When I'd change it**: If user feedback in production indicates that users prefer interactive follow-up clarification over automated query rewriting.

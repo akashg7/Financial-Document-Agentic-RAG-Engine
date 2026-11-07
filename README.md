@@ -43,7 +43,7 @@ See [docs/architecture.md](docs/architecture.md) for diagrams.
 - [x] Day 3: Sparse/BM25, RRF, /search/hybrid
 - [x] Day 4: Cross-encoder rerank, golden set, benchmarks
 - [x] Day 5: LLM client, citations, validation
-- [ ] Day 6: Confidence scorer, threshold tuning
+- [x] Day 6: Confidence scorer, threshold tuning
 - [ ] Day 7: LangGraph agent (generate/rewrite/abstain)
 - [ ] Day 8: Caching, lineage, delta re-ingest
 - [ ] Day 9: SSE streaming, rate limiting, observability
