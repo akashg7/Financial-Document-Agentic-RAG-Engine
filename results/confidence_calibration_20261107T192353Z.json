@@ -1,0 +1,55 @@
+{
+  "timestamp": "20261107T192353Z",
+  "benchmark": "confidence_threshold_tuning",
+  "corpus_size": 119,
+  "configurations": {
+    "Strict (Conservative)": {
+      "threshold_generate": 0.75,
+      "threshold_abstain": 0.45,
+      "total_queries": 119,
+      "decisions": {
+        "generate": 86,
+        "rewrite": 0,
+        "abstain": 33
+      },
+      "generate_rate": 0.7227,
+      "rewrite_rate": 0.0,
+      "abstain_rate": 0.2773,
+      "unanswerable_abstain_accuracy": 1.0,
+      "answerable_generated_count": 86,
+      "answerable_rewritten_count": 0
+    },
+    "Balanced (Default)": {
+      "threshold_generate": 0.7,
+      "threshold_abstain": 0.4,
+      "total_queries": 119,
+      "decisions": {
+        "generate": 86,
+        "rewrite": 13,
+        "abstain": 20
+      },
+      "generate_rate": 0.7227,
+      "rewrite_rate": 0.1092,
+      "abstain_rate": 0.1681,
+      "unanswerable_abstain_accuracy": 1.0,
+      "answerable_generated_count": 86,
+      "answerable_rewritten_count": 13
+    },
+    "Permissive (Aggressive)": {
+      "threshold_generate": 0.6,
+      "threshold_abstain": 0.35,
+      "total_queries": 119,
+      "decisions": {
+        "generate": 86,
+        "rewrite": 13,
+        "abstain": 20
+      },
+      "generate_rate": 0.7227,
+      "rewrite_rate": 0.1092,
+      "abstain_rate": 0.1681,
+      "unanswerable_abstain_accuracy": 1.0,
+      "answerable_generated_count": 86,
+      "answerable_rewritten_count": 13
+    }
+  }
+}
