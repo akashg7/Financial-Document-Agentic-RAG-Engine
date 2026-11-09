@@ -44,7 +44,7 @@ See [docs/architecture.md](docs/architecture.md) for diagrams.
 - [x] Day 4: Cross-encoder rerank, golden set, benchmarks
 - [x] Day 5: LLM client, citations, validation
 - [x] Day 6: Confidence scorer, threshold tuning
-- [ ] Day 7: LangGraph agent (generate/rewrite/abstain)
+- [x] Day 7: LangGraph agent (generate/rewrite/abstain, StateGraph Hand-Write #3)
 - [ ] Day 8: Caching, lineage, delta re-ingest
 - [ ] Day 9: SSE streaming, rate limiting, observability
 - [ ] Day 10: Final benchmarks, RAGAS, interview prep

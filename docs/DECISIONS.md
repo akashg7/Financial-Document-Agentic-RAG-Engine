@@ -388,3 +388,57 @@ Every major tradeoff is recorded here with: the decision, why, what alternatives
 - Higher generate threshold (e.g. 0.85): Excessively conservative; abstains on valid complex queries that require slight reasoning.
 
 **When I'd change it**: If user feedback in production indicates that users prefer interactive follow-up clarification over automated query rewriting.
+
+---
+
+## Decision 23: LangGraph `StateGraph` Cyclical State Machine vs. Linear DAG Chains
+
+**Decision**: Implement the agentic RAG loop using LangGraph's `StateGraph` with explicit cyclical edges (`rewrite -> retrieve`) and conditional routing (`route_decision`), rather than linear pipeline abstractions (LangChain LCEL, LlamaIndex query engines).
+
+**Why**:
+- Cyclical execution: High-stakes financial RAG requires iterative query reformulation when initial retrieval confidence is ambiguous. Linear DAGs cannot loop back without recursive hacks or external orchestration.
+- Explicit state progression: LangGraph exposes the full execution state machine (`retrieve -> generate -> route -> [rewrite | abstain | END]`), making debugging, visualization, and observability straightforward.
+- Foundation for checkpointing & human-in-the-loop: StateGraph natively supports checkpointing and persistence for long-running workflows or future agent extensions.
+
+**Alternatives**:
+- Linear LCEL (LangChain Expression Language): Clean for single-pass RAG, but fundamentally acyclic; cannot support iterative retrieval retry loops.
+- AutoGen / CrewAI multi-agent conversational patterns: Unnecessary conversational overhead and nondeterministic turn-taking for a task that is fundamentally a state-machine control loop.
+- Plain Python while-loops: Simple to write initially, but lacks checkpointing, graph visualization, interruptibility, and standardized telemetry integration.
+
+**When I'd change it**: If the workflow grows into a multi-agent debate architecture where multiple autonomous persona agents critique each other asynchronously.
+
+---
+
+## Decision 24: TypedDict State Definition with Partial Node Merging vs. Pydantic Models in StateGraph
+
+**Decision**: Define `AgentState` as a `typing_extensions.TypedDict(total=False)` rather than a strict `pydantic.BaseModel` inside the LangGraph state machine.
+
+**Why**:
+- Partial state return: In LangGraph, nodes can return lightweight dictionaries containing only the keys they mutate (e.g., `{"current_query": new_q, "retry_count": count}`). LangGraph automatically merges these partial updates into the global state without requiring full model re-instantiation.
+- Execution efficiency: Avoids Pydantic model validation and serialization overhead on every graph edge transition.
+- Schema flexibility: Easy to thread optional metadata, tracing tokens, and telemetry fields across nodes without strict schema migration constraints.
+
+**Alternatives**:
+- Pydantic BaseModel state: Offers runtime type validation, but requires every node to return a complete model instance or construct complex validation wrappers.
+- Global shared mutable dictionary: Mutable shared state can lead to concurrency race conditions and unpredictable edge effects during branching.
+
+**When I'd change it**: If external untrusted plugins or dynamic third-party nodes are injected into the graph, requiring strict runtime validation of state transitions.
+
+---
+
+## Decision 25: Hybrid LLM + Deterministic Financial Query Reformulation with Progressive Deepening
+
+**Decision**: Implement query rewriting with an intelligent deterministic fallback that removes conversational filler, injects ticker symbols, expands domain-specific GAAP terminology ("sales" -> "net sales revenue consolidated operations"), and applies progressive deepening (adding Item 7/8 headers on retry 1, financial statements on retry 2) if LLM rewriting fails or runs offline.
+
+**Why**:
+- Zero-cost & offline resilience: If external LLM API rate limits (Groq 429) occur during rewriting, the system must not halt or fail. Deterministic expansion guarantees the agentic retry loop operates reliably even without external API connectivity.
+- Domain alignment: SEC EDGAR filings strictly adhere to standardized GAAP headers and item classifications. Expanding colloquial questions into regulatory vocabulary dramatically improves both BM25 term frequency match and dense semantic alignment.
+- Preventing query oscillation: Progressive deepening alters the query structure on every retry iteration, ensuring the agent does not repeat identical search queries across cycles.
+
+**Alternatives**:
+- Pure LLM query rewriting without deterministic fallback: Dependent on external API availability; fails completely when offline or rate-limited.
+- Rule-based synonym replacement without progressive deepening: Can get stuck in semantic loops if the base synonyms still fail to hit relevant chunks.
+- Hypothetical Document Embeddings (HyDE): Generates an entire hypothetical 10-K excerpt before retrieval; high latency (~1-2s additional LLM call) and can hallucinate fictitious financial numbers that mislead retrieval.
+
+**When I'd change it**: If a dedicated sequence-to-sequence model fine-tuned specifically on EDGAR query reformulation is deployed locally with sub-20ms inference latency.
+

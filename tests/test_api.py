@@ -424,3 +424,56 @@ class TestGenerateEndpoint:
         """POST /generate without query returns 422 validation error."""
         resp = await client.post("/api/v1/generate", json={})
         assert resp.status_code == 422
+
+
+class TestQueryEndpoint:
+    """Tests for POST /api/v1/query (Agentic Loop)."""
+
+    @pytest.mark.asyncio
+    async def test_query_validation_fails_without_query(self, client):
+        """POST /query without query returns 422 validation error."""
+        resp = await client.post("/api/v1/query", json={})
+        assert resp.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_query_endpoint_delegates_to_agent(self, client):
+        """POST /query invokes run_financial_agent and returns structured AnswerResponse."""
+        from unittest.mock import patch
+        from app.schemas import AnswerResponse, Citation
+
+        mock_resp = AnswerResponse(
+            query="What was Apple's total sales in 2023?",
+            answer="Apple net sales were $383,285 million in 2023 [Chunk: AAPL_10-K_2023_chunk_0000].",
+            citations=[
+                Citation(
+                    chunk_id="AAPL_10-K_2023_chunk_0000",
+                    doc_id="AAPL_10-K_2023",
+                    quote="Apple net sales were $383,285 million in 2023.",
+                )
+            ],
+            confidence=0.88,
+            decision="generate",
+            retries=1,
+            latency_ms=145.2,
+            cached=False,
+        )
+
+        with patch("app.agent.graph.run_financial_agent", return_value=mock_resp):
+            resp = await client.post(
+                "/api/v1/query",
+                json={
+                    "query": "What was Apple's total sales in 2023?",
+                    "top_k": 3,
+                    "ticker_filter": "AAPL",
+                    "max_retries": 2,
+                },
+            )
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["query"] == "What was Apple's total sales in 2023?"
+            assert data["confidence"] == 0.88
+            assert data["decision"] == "generate"
+            assert data["retries"] == 1
+            assert len(data["citations"]) == 1
+            assert data["latency_ms"] == 145.2
+

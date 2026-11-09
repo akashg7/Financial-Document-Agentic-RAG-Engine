@@ -1,0 +1,33 @@
+{
+  "timestamp": "20261109T161001Z",
+  "agent_framework": "LangGraph StateGraph",
+  "scenarios": [
+    {
+      "scenario": 1,
+      "name": "Direct Generation",
+      "query": "What was Apple's total net sales in fiscal year 2023?",
+      "decision": "generate",
+      "confidence": 0.8425,
+      "retries": 0,
+      "latency_ms": 1190.26
+    },
+    {
+      "scenario": 2,
+      "name": "Query Rewriting Cycle",
+      "query": "can you please tell me how much debt Apple had in 2023",
+      "decision": "generate",
+      "confidence": 0.89,
+      "retries": 1,
+      "latency_ms": 7.71
+    },
+    {
+      "scenario": 3,
+      "name": "Disciplined Abstention",
+      "query": "What are Apple's revenue and gross margin targets for fiscal 2050?",
+      "decision": "abstain",
+      "confidence": 0.0,
+      "retries": 0,
+      "latency_ms": 759.83
+    }
+  ]
+}

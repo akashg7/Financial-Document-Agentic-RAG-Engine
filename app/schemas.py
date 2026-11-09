@@ -151,6 +151,16 @@ class GenerateRequest(BaseModel):
     doc_type_filter: Optional[DocumentType] = Field(default=None, description="Optional document type filter")
 
 
+class QueryRequest(BaseModel):
+    """Request for agentic question answering with automated query rewriting and conditional routing."""
+    query: str = Field(..., description="Natural language financial question", min_length=1)
+    top_k: int = Field(default=5, description="Number of context chunks to retrieve and ground on", ge=1, le=20)
+    ticker_filter: Optional[str] = Field(default=None, description="Optional ticker symbol filter")
+    doc_type_filter: Optional[DocumentType] = Field(default=None, description="Optional document type filter")
+    max_retries: int = Field(default=2, description="Maximum query rewrite attempts before abstention", ge=0, le=5)
+
+
+
 class Citation(BaseModel):
     """A citation binding a claim to a source chunk."""
     chunk_id: str

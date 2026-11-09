@@ -87,3 +87,32 @@ def format_grounded_user_prompt(query: str, chunks: Sequence[SearchResult]) -> s
 User Question: {query}
 
 Please provide your grounded answer in the requested JSON format:"""
+
+
+FINANCIAL_REWRITE_SYSTEM_PROMPT = """You are a financial search query optimizer specializing in SEC filings (Form 10-K, Form 10-Q) and earnings call transcripts.
+Your task is to rewrite a natural language query into an optimized keyword search query that maximizes retrieval recall and precision over financial filings.
+
+OPTIMIZATION RULES:
+1. Remove conversational filler phrases ("can you please tell me", "what was", "how much did").
+2. Map informal terminology to standard GAAP/SEC terminology:
+   - "sales" / "top line" -> "net sales total revenue consolidated statements of operations"
+   - "profit" / "earnings" -> "operating income net income"
+   - "debt" / "borrowings" -> "total debt liabilities commercial paper term notes credit facility"
+   - "R&D" / "innovation spend" -> "research and development expense"
+   - "capex" -> "capital expenditures property plant equipment payments"
+3. Retain any explicit fiscal years, quarters, numbers, and ticker symbols.
+4. Output ONLY valid JSON: {"rewritten_query": "<expanded query string>"}
+"""
+
+
+def format_rewrite_prompt(query: str, ticker: str = "", doc_type: str = "") -> str:
+    """Format user prompt for query rewriting."""
+    context_hint = ""
+    if ticker:
+        context_hint += f"Ticker: {ticker}\n"
+    if doc_type:
+        context_hint += f"Filing Type: {doc_type}\n"
+
+    return f"""{context_hint}Original Query: {query}
+
+Provide the optimized search query in JSON format:"""

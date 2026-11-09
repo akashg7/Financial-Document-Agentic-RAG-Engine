@@ -25,6 +25,7 @@ from app.schemas import (
     SearchRequest,
     SearchResponse,
     GenerateRequest,
+    QueryRequest,
     AnswerResponse,
 )
 from app.ingestion.pipeline import run_ingestion_pipeline
@@ -367,3 +368,32 @@ async def generate_answer(request: GenerateRequest):
     answer_resp.latency_ms = round(total_latency_ms, 2)
 
     return answer_resp
+
+
+@router.post("/query", response_model=AnswerResponse, tags=["agent"])
+async def query_agent(request: QueryRequest):
+    """
+    Execute the agentic financial QA loop (LangGraph StateGraph).
+
+    HOW IT WORKS:
+    1. Enters the compiled LangGraph state machine.
+    2. Retrieve node performs hybrid search (dense + sparse + RRF) and cross-encoder rerank.
+    3. Generate node synthesizes grounded answer, validates citations, and calculates
+       calibrated composite confidence.
+    4. Conditional edge evaluates confidence:
+       - confidence >= 0.70 ('generate') -> terminates and returns verified answer.
+       - 0.40 <= confidence < 0.70 ('rewrite') -> rewrites query and loops back to retrieve (up to max_retries).
+       - confidence < 0.40 or retries exhausted -> routes to abstain node.
+    5. Returns AnswerResponse with final answer, verified citations, confidence, and retries.
+    """
+    from app.agent.graph import run_financial_agent
+
+    doc_type_val = request.doc_type_filter.value if request.doc_type_filter else None
+    return run_financial_agent(
+        query=request.query,
+        top_k=request.top_k,
+        ticker_filter=request.ticker_filter,
+        doc_type_filter=doc_type_val,
+        max_retries=request.max_retries,
+    )
+
