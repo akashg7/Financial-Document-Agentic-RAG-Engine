@@ -477,3 +477,43 @@ class TestQueryEndpoint:
             assert len(data["citations"]) == 1
             assert data["latency_ms"] == 145.2
 
+
+class TestCacheEndpoints:
+    """Tests for Day 8 Cache Invalidation & Stats Endpoints."""
+
+    @pytest.mark.asyncio
+    async def test_get_cache_stats(self, client):
+        """GET /api/v1/cache/stats returns current operational telemetry."""
+        resp = await client.get("/api/v1/cache/stats")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "total_entries" in data
+        assert "total_hits" in data
+        assert "hit_rate" in data
+
+    @pytest.mark.asyncio
+    async def test_invalidate_document_endpoint(self, client):
+        """POST /api/v1/cache/invalidate/document triggers document eviction."""
+        resp = await client.post(
+            "/api/v1/cache/invalidate/document",
+            json={"doc_id": "AAPL_10-K_2023"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["target"] == "doc:AAPL_10-K_2023"
+        assert "evicted_cache_keys" in data
+        assert "evicted_count" in data
+
+    @pytest.mark.asyncio
+    async def test_invalidate_chunks_endpoint(self, client):
+        """POST /api/v1/cache/invalidate/chunks triggers surgical chunk eviction."""
+        resp = await client.post(
+            "/api/v1/cache/invalidate/chunks",
+            json={"chunk_ids": ["chunk_001", "chunk_002"]},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "chunks:2" in data["target"]
+        assert "evicted_cache_keys" in data
+
+

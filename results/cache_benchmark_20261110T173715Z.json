@@ -1,0 +1,46 @@
+{
+  "timestamp": "20261110T173715Z",
+  "metrics": [
+    {
+      "pass": 1,
+      "type": "Cold Miss",
+      "query": "What was Apple's total net sales in fiscal 2023?",
+      "cached": false,
+      "latency_ms": 3722.72,
+      "speedup": "1.0x (baseline)"
+    },
+    {
+      "pass": 2,
+      "type": "L1 Exact Hit",
+      "query": "what was apple's total net sales in fiscal 2023?",
+      "cached": true,
+      "latency_ms": 4.3,
+      "speedup": "866.6x"
+    },
+    {
+      "pass": 3,
+      "type": "L2 Semantic Hit",
+      "query": "What was Apple total net sales in fiscal 2023?",
+      "cached": true,
+      "latency_ms": 14.98,
+      "speedup": "248.5x"
+    },
+    {
+      "pass": 4,
+      "type": "Post-Invalidation Re-query",
+      "query": "What was Apple's total net sales in fiscal 2023?",
+      "cached": false,
+      "latency_ms": 455.84,
+      "evicted_keys": 1
+    }
+  ],
+  "cache_stats": {
+    "total_entries": 1,
+    "total_hits": 2,
+    "l1_exact_hits": 1,
+    "l2_semantic_hits": 1,
+    "misses": 2,
+    "hit_rate": 0.5,
+    "storage_backend": "in-memory"
+  }
+}

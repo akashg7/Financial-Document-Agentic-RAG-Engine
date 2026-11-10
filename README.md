@@ -45,7 +45,7 @@ See [docs/architecture.md](docs/architecture.md) for diagrams.
 - [x] Day 5: LLM client, citations, validation
 - [x] Day 6: Confidence scorer, threshold tuning
 - [x] Day 7: LangGraph agent (generate/rewrite/abstain, StateGraph Hand-Write #3)
-- [ ] Day 8: Caching, lineage, delta re-ingest
+- [x] Day 8: Caching, lineage, delta re-ingest (Lineage DAG Hand-Write #4)
 - [ ] Day 9: SSE streaming, rate limiting, observability
 - [ ] Day 10: Final benchmarks, RAGAS, interview prep
 

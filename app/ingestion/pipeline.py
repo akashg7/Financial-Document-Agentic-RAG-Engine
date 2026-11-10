@@ -142,6 +142,24 @@ def run_ingestion_pipeline(job_id: str, request: IngestionRequest):
             logger.info(
                 "Job %s: upserted %d chunks to Qdrant", job_id, upserted
             )
+
+            # ── Step 6: Register Lineage and Invalidate Stale Caches ───
+            # WHY: When a document is re-ingested or updated, any cached answers
+            # that cited previous versions of this document must be evicted immediately.
+            try:
+                from app.cache.lineage import get_lineage_manager
+                lineage_mgr = get_lineage_manager()
+                doc_chunks_map: dict[str, list[str]] = {}
+                for c in all_chunks_to_insert:
+                    d_id = c.metadata.doc_id
+                    doc_chunks_map.setdefault(d_id, []).append(c.metadata.chunk_id)
+
+                for d_id, c_ids in doc_chunks_map.items():
+                    lineage_mgr.invalidate_by_document(d_id)
+                    lineage_mgr.register_document_chunks(d_id, c_ids)
+                logger.info("Job %s: registered lineage for %d documents", job_id, len(doc_chunks_map))
+            except Exception as lineage_err:
+                logger.warning("Could not register cache lineage (%s)", lineage_err)
         else:
             logger.info("Job %s: no new chunks to upsert", job_id)
 

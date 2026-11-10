@@ -27,7 +27,10 @@ from app.schemas import (
     GenerateRequest,
     QueryRequest,
     AnswerResponse,
+    InvalidateDocumentRequest,
+    InvalidateChunksRequest,
 )
+from app.cache.models import InvalidationResult, CacheStats
 from app.ingestion.pipeline import run_ingestion_pipeline
 from app.ingestion.redis_job_store import get_job, set_job
 
@@ -396,4 +399,64 @@ async def query_agent(request: QueryRequest):
         doc_type_filter=doc_type_val,
         max_retries=request.max_retries,
     )
+
+
+# ============================================================
+# Semantic Cache & Lineage Endpoints (Day 8)
+# ============================================================
+
+@router.post("/cache/invalidate/document", response_model=InvalidationResult, tags=["cache"])
+async def invalidate_document_cache(request: InvalidateDocumentRequest):
+    """
+    Surgically invalidate all cached answers that depend on a specific document.
+
+    Traverses the lineage DAG:
+    1. Finds all chunks belonging to doc_id.
+    2. Evicts all cached queries citing those chunks from L1 exact and L2 semantic indices.
+    3. Cleans up reverse lineage pointers.
+    """
+    from app.cache.lineage import get_lineage_manager
+
+    mgr = get_lineage_manager()
+    affected_queries = mgr.get_affected_queries(doc_id=request.doc_id)
+    evicted_keys = mgr.invalidate_by_document(request.doc_id)
+
+    return InvalidationResult(
+        target=f"doc:{request.doc_id}",
+        evicted_cache_keys=evicted_keys,
+        evicted_count=len(evicted_keys),
+        affected_queries=affected_queries,
+    )
+
+
+@router.post("/cache/invalidate/chunks", response_model=InvalidationResult, tags=["cache"])
+async def invalidate_chunks_cache(request: InvalidateChunksRequest):
+    """
+    Surgically invalidate all cached answers that depend on specific chunk IDs.
+    """
+    from app.cache.lineage import get_lineage_manager
+
+    mgr = get_lineage_manager()
+    all_affected = []
+    for cid in request.chunk_ids:
+        all_affected.extend(mgr.get_affected_queries(chunk_id=cid))
+
+    evicted_keys = mgr.invalidate_by_chunk_ids(request.chunk_ids)
+
+    return InvalidationResult(
+        target=f"chunks:{len(request.chunk_ids)}",
+        evicted_cache_keys=evicted_keys,
+        evicted_count=len(evicted_keys),
+        affected_queries=sorted(list(set(all_affected))),
+    )
+
+
+@router.get("/cache/stats", response_model=CacheStats, tags=["cache"])
+async def get_cache_statistics():
+    """Retrieve operational telemetry and hit-rate statistics for the semantic cache."""
+    from app.cache.semantic_cache import get_semantic_cache
+
+    cache = get_semantic_cache()
+    return cache.get_stats()
+
 

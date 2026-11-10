@@ -184,3 +184,18 @@ class AnswerResponse(BaseModel):
     retries: int = Field(0, description="Number of query rewrites performed")
     latency_ms: float = 0.0
     cached: bool = False
+
+
+# ============================================================
+# Cache Invalidation Models (Day 8)
+# ============================================================
+
+class InvalidateDocumentRequest(BaseModel):
+    """Request to invalidate all cached queries dependent on a document."""
+    doc_id: str = Field(..., description="Document ID to invalidate", min_length=1)
+
+
+class InvalidateChunksRequest(BaseModel):
+    """Request to invalidate all cached queries dependent on specific chunks."""
+    chunk_ids: list[str] = Field(..., description="List of chunk IDs to invalidate", min_length=1)
+
