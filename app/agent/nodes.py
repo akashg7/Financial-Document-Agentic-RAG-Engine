@@ -10,6 +10,7 @@ The nodes:
 5. route_decision: Conditional edge routing based on confidence score and retry budget.
 """
 
+import time
 import logging
 from typing import Any, Dict
 
@@ -19,6 +20,11 @@ from app.retrieval.vector_store import search_dense, search_sparse
 from app.retrieval.rrf import reciprocal_rank_fusion
 from app.rerank.reranker import rerank
 from app.llm.client import get_llm_client
+from app.observability.metrics import (
+    RETRIEVAL_LATENCY,
+    GENERATION_LATENCY,
+    CHUNKS_RETRIEVED,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +34,7 @@ def retrieve_node(state: AgentState) -> Dict[str, Any]:
     Retrieve candidate chunks using hybrid search (dense + sparse + RRF)
     and refine them using the cross-encoder reranker.
     """
+    start_time = time.time()
     query = state.get("current_query") or state.get("query", "")
     top_k = state.get("top_k", 5)
     ticker = state.get("ticker_filter")
@@ -74,7 +81,11 @@ def retrieve_node(state: AgentState) -> Dict[str, Any]:
     else:
         top_chunks = []
 
-    logger.info("retrieve_node retrieved and reranked %d chunks", len(top_chunks))
+    elapsed = time.time() - start_time
+    RETRIEVAL_LATENCY.observe(elapsed)
+    CHUNKS_RETRIEVED.observe(len(top_chunks))
+
+    logger.info("retrieve_node retrieved and reranked %d chunks in %.3f s", len(top_chunks), elapsed)
     return {"retrieved_chunks": top_chunks}
 
 
@@ -83,6 +94,7 @@ def generate_node(state: AgentState) -> Dict[str, Any]:
     Generate grounded response using the retrieved chunks, validate citations,
     and compute multi-signal calibrated confidence.
     """
+    start_time = time.time()
     query = state.get("current_query") or state.get("query", "")
     chunks = state.get("retrieved_chunks", [])
 
@@ -93,6 +105,9 @@ def generate_node(state: AgentState) -> Dict[str, Any]:
         query=query,
         context_chunks=chunks,
     )
+
+    elapsed = time.time() - start_time
+    GENERATION_LATENCY.observe(elapsed)
 
     return {
         "answer": answer_resp.answer,

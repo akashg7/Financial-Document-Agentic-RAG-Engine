@@ -22,6 +22,14 @@ from app.agent.nodes import (
     abstain_node,
     route_decision,
 )
+from app.observability.metrics import (
+    QUERIES_TOTAL,
+    QUERY_LATENCY,
+    CONFIDENCE_SCORE,
+    CACHE_HITS,
+    CACHE_MISSES,
+    ACTIVE_QUERIES,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -160,7 +168,14 @@ def run_financial_agent(
             if cached_entry:
                 elapsed_ms = (time.time() - start_time) * 1000
                 logger.info("Serving query '%s' from %s cache (%.2f ms)", query, hit_type, elapsed_ms)
+                tier_label = "L1_exact" if hit_type == "exact" else "L2_semantic"
+                CACHE_HITS.labels(tier=tier_label).inc()
+                QUERIES_TOTAL.labels(decision="generate").inc()
+                QUERY_LATENCY.observe(elapsed_ms / 1000.0)
+                CONFIDENCE_SCORE.observe(cached_entry.confidence)
                 return cached_entry.to_answer_response(query=query, latency_ms=elapsed_ms)
+            else:
+                CACHE_MISSES.inc()
         except Exception as cache_err:
             logger.warning("Cache lookup encountered error (%s); falling back to graph execution", cache_err)
 
@@ -187,7 +202,8 @@ def run_financial_agent(
         "error": None,
     }
 
-    final_state = graph.invoke(initial_state)
+    with ACTIVE_QUERIES.track_inprogress():
+        final_state = graph.invoke(initial_state)
     elapsed_ms = (time.time() - start_time) * 1000
 
     response = AnswerResponse(
@@ -200,6 +216,11 @@ def run_financial_agent(
         latency_ms=round(elapsed_ms, 2),
         cached=final_state.get("cached", False),
     )
+
+    # Record Prometheus metrics
+    QUERIES_TOTAL.labels(decision=response.decision).inc()
+    QUERY_LATENCY.observe(elapsed_ms / 1000.0)
+    CONFIDENCE_SCORE.observe(response.confidence)
 
     # 3. If successfully answered with high confidence, populate cache with lineage (Day 8)
     if use_cache and response.decision == "generate":

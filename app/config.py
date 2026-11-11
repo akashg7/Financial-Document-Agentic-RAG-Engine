@@ -57,6 +57,10 @@ class Settings(BaseSettings):
     langsmith_project: str = Field(default="financial-rag-engine", description="LangSmith project name")
     langsmith_tracing_enabled: bool = Field(default=False, description="Enable LangSmith tracing")
 
+    # --- Rate Limiting ---
+    rate_limit_enabled: bool = Field(default=True, description="Enable request rate limiting")
+    rate_limit_default: str = Field(default="60/minute", description="Default rate limit per client")
+
     # --- App ---
     app_env: str = Field(default="development", description="Environment: development, staging, production")
     log_level: str = Field(default="INFO", description="Logging level")

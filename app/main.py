@@ -10,15 +10,27 @@ DAY 2 CHANGES:
 - Added Qdrant collection initialization on startup.
 - Qdrant init is wrapped in try/except so the app starts even if
   Qdrant is temporarily unavailable (useful for local dev without Docker).
+
+DAY 9 CHANGES:
+- Configured SlowAPI rate limiter with SlowAPIMiddleware and custom 429 handler.
+- Initialized optional LangSmith distributed tracing in lifespan.
+- Exposed GET /metrics endpoint for Prometheus scrapers with domain-specific metrics.
 """
 
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
+from fastapi.responses import JSONResponse
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
 from app.config import settings
 from app.api.routes import router as api_router
+from app.limiter import limiter
+from app.observability.tracing import setup_langsmith
+from app.observability.metrics import RATE_LIMITED_REQUESTS
 
 
 logging.basicConfig(
@@ -36,12 +48,19 @@ async def lifespan(app: FastAPI):
     once at shutdown (after yield).
 
     Startup tasks:
-    1. Initialize Qdrant collection (create if not exists, set up indexes)
+    1. Configure LangSmith distributed tracing if enabled.
+    2. Initialize Qdrant collection (create if not exists, set up indexes).
     """
     logger.info("Starting Financial Document Intelligence Engine v%s", "0.1.0")
     logger.info("Environment: %s", settings.app_env)
 
-    # Initialize Qdrant collection
+    # 1. Initialize LangSmith tracing
+    try:
+        setup_langsmith()
+    except Exception as e:
+        logger.warning("Could not initialize LangSmith tracing: %s", e)
+
+    # 2. Initialize Qdrant collection
     try:
         from app.retrieval.vector_store import init_collection
         init_collection()
@@ -67,6 +86,31 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Attach rate limiter to FastAPI state & register middleware
+app.state.limiter = limiter
+app.add_middleware(SlowAPIMiddleware)
+
+
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded):
+    """
+    Custom handler for rate limit violations.
+
+    Tracks rejected requests in Prometheus and returns a structured JSON payload
+    with 429 status code and human-readable detail.
+    """
+    RATE_LIMITED_REQUESTS.inc()
+    logger.warning("Rate limit exceeded for %s on %s: %s", request.client.host if request.client else "unknown", request.url.path, exc.detail)
+    return JSONResponse(
+        status_code=429,
+        content={
+            "error": "RateLimitExceeded",
+            "detail": f"Rate limit exceeded: {exc.detail}",
+            "retry_after_seconds": 60,
+        },
+    )
+
+
 app.include_router(api_router, prefix="/api/v1")
 
 
@@ -74,3 +118,18 @@ app.include_router(api_router, prefix="/api/v1")
 async def health_check():
     """Basic health check endpoint."""
     return {"status": "healthy", "version": "0.1.0"}
+
+
+@app.get("/metrics", tags=["observability"])
+async def metrics():
+    """
+    Prometheus scraping endpoint.
+
+    Exposes real-time application metrics including query latencies,
+    confidence distributions, cache hit/miss counters, retrieval statistics,
+    and rate limiting counters formatted according to Prometheus standards.
+    """
+    return Response(
+        content=generate_latest(),
+        media_type=CONTENT_TYPE_LATEST,
+    )

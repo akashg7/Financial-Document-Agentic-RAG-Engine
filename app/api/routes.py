@@ -8,6 +8,10 @@ Day 3: added POST /search/sparse for BM25 keyword search,
        added POST /search/hybrid for RRF-fused dense+sparse search.
 Day 4: added POST /search/rerank for hybrid + cross-encoder reranking.
 Day 5: added POST /generate for grounded question answering with verified citations.
+Day 6: added confidence scoring fusion.
+Day 7: added POST /query for agentic loop with self-correction.
+Day 8: added semantic cache and lineage invalidation endpoints.
+Day 9: added rate limiting with SlowAPI and SSE streaming endpoint (POST /query/stream).
 """
 
 import time
@@ -15,7 +19,8 @@ import uuid
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
+from fastapi.responses import StreamingResponse
 
 from app.schemas import (
     IngestionRequest,
@@ -33,6 +38,9 @@ from app.schemas import (
 from app.cache.models import InvalidationResult, CacheStats
 from app.ingestion.pipeline import run_ingestion_pipeline
 from app.ingestion.redis_job_store import get_job, set_job
+from app.limiter import limiter
+from app.api.streaming import stream_agent_response
+from app.observability.metrics import INGESTION_JOBS
 
 logger = logging.getLogger(__name__)
 
@@ -40,8 +48,10 @@ router = APIRouter()
 
 
 @router.post("/ingest", response_model=IngestionResponse, tags=["ingestion"])
+@limiter.limit("5/minute")
 async def ingest_documents(
-    request: IngestionRequest,
+    request: Request,
+    body: IngestionRequest,
     background_tasks: BackgroundTasks,
 ):
     """
@@ -56,6 +66,7 @@ async def ingest_documents(
 
     Returns a job_id the client can poll via GET /job/{job_id}.
     """
+    INGESTION_JOBS.inc()
     job_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
 
@@ -69,14 +80,15 @@ async def ingest_documents(
     set_job(job_id, job)
 
     # Dispatch the actual work to a background thread
-    background_tasks.add_task(run_ingestion_pipeline, job_id, request)
+    background_tasks.add_task(run_ingestion_pipeline, job_id, body)
 
-    logger.info("Created ingestion job %s for source=%s", job_id, request.source)
+    logger.info("Created ingestion job %s for source=%s", job_id, body.source)
     return IngestionResponse(job_id=job_id, status=IngestionStatus.PENDING)
 
 
 @router.get("/job/{job_id}", response_model=JobStatus, tags=["ingestion"])
-async def get_job_status(job_id: str):
+@limiter.limit("60/minute")
+async def get_job_status(request: Request, job_id: str):
     """
     Check the status of an ingestion job.
 
@@ -92,7 +104,8 @@ async def get_job_status(job_id: str):
 
 
 @router.post("/search/dense", response_model=SearchResponse, tags=["search"])
-async def dense_search(request: SearchRequest):
+@limiter.limit("30/minute")
+async def dense_search(request: Request, body: SearchRequest):
     """
     Perform dense (semantic) vector search over ingested documents.
 
@@ -116,16 +129,16 @@ async def dense_search(request: SearchRequest):
     start = time.time()
 
     results = search_dense(
-        query=request.query,
-        top_k=request.top_k,
-        ticker_filter=request.ticker_filter,
-        doc_type_filter=request.doc_type_filter.value if request.doc_type_filter else None,
+        query=body.query,
+        top_k=body.top_k,
+        ticker_filter=body.ticker_filter,
+        doc_type_filter=body.doc_type_filter.value if body.doc_type_filter else None,
     )
 
     latency_ms = (time.time() - start) * 1000
 
     return SearchResponse(
-        query=request.query,
+        query=body.query,
         results=results,
         retrieval_method="dense",
         latency_ms=round(latency_ms, 2),
@@ -133,7 +146,8 @@ async def dense_search(request: SearchRequest):
 
 
 @router.post("/search/sparse", response_model=SearchResponse, tags=["search"])
-async def sparse_search(request: SearchRequest):
+@limiter.limit("30/minute")
+async def sparse_search(request: Request, body: SearchRequest):
     """
     Perform sparse (BM25 keyword) search over ingested documents.
 
@@ -156,16 +170,16 @@ async def sparse_search(request: SearchRequest):
     start = time.time()
 
     results = search_sparse(
-        query=request.query,
-        top_k=request.top_k,
-        ticker_filter=request.ticker_filter,
-        doc_type_filter=request.doc_type_filter.value if request.doc_type_filter else None,
+        query=body.query,
+        top_k=body.top_k,
+        ticker_filter=body.ticker_filter,
+        doc_type_filter=body.doc_type_filter.value if body.doc_type_filter else None,
     )
 
     latency_ms = (time.time() - start) * 1000
 
     return SearchResponse(
-        query=request.query,
+        query=body.query,
         results=results,
         retrieval_method="sparse",
         latency_ms=round(latency_ms, 2),
@@ -173,7 +187,8 @@ async def sparse_search(request: SearchRequest):
 
 
 @router.post("/search/hybrid", response_model=SearchResponse, tags=["search"])
-async def hybrid_search(request: SearchRequest):
+@limiter.limit("30/minute")
+async def hybrid_search(request: Request, body: SearchRequest):
     """
     Perform hybrid search: dense + sparse, fused with Reciprocal Rank Fusion.
 
@@ -200,42 +215,42 @@ async def hybrid_search(request: SearchRequest):
     start = time.time()
 
     # Over-retrieve from both methods to give RRF enough candidates
-    retrieval_k = min(request.top_k * 2, 50)
+    retrieval_k = min(body.top_k * 2, 50)
 
     dense_results = search_dense(
-        query=request.query,
+        query=body.query,
         top_k=retrieval_k,
-        ticker_filter=request.ticker_filter,
-        doc_type_filter=request.doc_type_filter.value if request.doc_type_filter else None,
+        ticker_filter=body.ticker_filter,
+        doc_type_filter=body.doc_type_filter.value if body.doc_type_filter else None,
     )
 
     sparse_results = search_sparse(
-        query=request.query,
+        query=body.query,
         top_k=retrieval_k,
-        ticker_filter=request.ticker_filter,
-        doc_type_filter=request.doc_type_filter.value if request.doc_type_filter else None,
+        ticker_filter=body.ticker_filter,
+        doc_type_filter=body.doc_type_filter.value if body.doc_type_filter else None,
     )
 
     # Fuse with RRF
     fused_results = reciprocal_rank_fusion(
         [dense_results, sparse_results],
         k=60,
-        top_n=request.top_k,
+        top_n=body.top_k,
     )
 
     latency_ms = (time.time() - start) * 1000
 
     return SearchResponse(
-        query=request.query,
+        query=body.query,
         results=fused_results,
         retrieval_method="hybrid",
         latency_ms=round(latency_ms, 2),
     )
 
 
-
 @router.post("/search/rerank", response_model=SearchResponse, tags=["search"])
-async def rerank_search(request: SearchRequest):
+@limiter.limit("30/minute")
+async def rerank_search(request: Request, body: SearchRequest):
     """
     Two-stage retrieval: hybrid search (dense + sparse + RRF) → cross-encoder rerank.
 
@@ -266,17 +281,17 @@ async def rerank_search(request: SearchRequest):
     retrieval_k = 50
 
     dense_results = search_dense(
-        query=request.query,
+        query=body.query,
         top_k=retrieval_k,
-        ticker_filter=request.ticker_filter,
-        doc_type_filter=request.doc_type_filter.value if request.doc_type_filter else None,
+        ticker_filter=body.ticker_filter,
+        doc_type_filter=body.doc_type_filter.value if body.doc_type_filter else None,
     )
 
     sparse_results = search_sparse(
-        query=request.query,
+        query=body.query,
         top_k=retrieval_k,
-        ticker_filter=request.ticker_filter,
-        doc_type_filter=request.doc_type_filter.value if request.doc_type_filter else None,
+        ticker_filter=body.ticker_filter,
+        doc_type_filter=body.doc_type_filter.value if body.doc_type_filter else None,
     )
 
     # Fuse with RRF — keep all 50 candidates for the cross-encoder
@@ -288,24 +303,24 @@ async def rerank_search(request: SearchRequest):
 
     # Stage 2: Cross-encoder reranking — precise scoring of each candidate
     reranked_results = rerank(
-        query=request.query,
+        query=body.query,
         results=fused_results,
-        top_k=request.top_k,
+        top_k=body.top_k,
     )
 
     latency_ms = (time.time() - start) * 1000
 
     return SearchResponse(
-        query=request.query,
+        query=body.query,
         results=reranked_results,
         retrieval_method="hybrid+rerank",
         latency_ms=round(latency_ms, 2),
     )
 
 
-
 @router.post("/generate", response_model=AnswerResponse, tags=["generation"])
-async def generate_answer(request: GenerateRequest):
+@limiter.limit("15/minute")
+async def generate_answer(request: Request, body: GenerateRequest):
     """
     Generate a grounded answer to a financial question with citation binding.
 
@@ -329,19 +344,19 @@ async def generate_answer(request: GenerateRequest):
     start = time.time()
 
     # Stage 1: Over-retrieve candidates via hybrid search
-    retrieval_k = min(max(request.top_k * 4, 20), 50)
-    ticker_val = request.ticker_filter
-    doc_type_val = request.doc_type_filter.value if request.doc_type_filter else None
+    retrieval_k = min(max(body.top_k * 4, 20), 50)
+    ticker_val = body.ticker_filter
+    doc_type_val = body.doc_type_filter.value if body.doc_type_filter else None
 
     dense_results = search_dense(
-        query=request.query,
+        query=body.query,
         top_k=retrieval_k,
         ticker_filter=ticker_val,
         doc_type_filter=doc_type_val,
     )
 
     sparse_results = search_sparse(
-        query=request.query,
+        query=body.query,
         top_k=retrieval_k,
         ticker_filter=ticker_val,
         doc_type_filter=doc_type_val,
@@ -355,15 +370,15 @@ async def generate_answer(request: GenerateRequest):
 
     # Stage 2: Neural rerank to extract the best top_k chunks
     top_chunks = rerank(
-        query=request.query,
+        query=body.query,
         results=fused_results,
-        top_k=request.top_k,
+        top_k=body.top_k,
     )
 
     # Stage 3: Grounded LLM generation & citation validation
     client = get_llm_client()
     answer_resp = client.answer_query(
-        query=request.query,
+        query=body.query,
         context_chunks=top_chunks,
     )
 
@@ -374,7 +389,8 @@ async def generate_answer(request: GenerateRequest):
 
 
 @router.post("/query", response_model=AnswerResponse, tags=["agent"])
-async def query_agent(request: QueryRequest):
+@limiter.limit("15/minute")
+async def query_agent(request: Request, body: QueryRequest):
     """
     Execute the agentic financial QA loop (LangGraph StateGraph).
 
@@ -391,13 +407,47 @@ async def query_agent(request: QueryRequest):
     """
     from app.agent.graph import run_financial_agent
 
-    doc_type_val = request.doc_type_filter.value if request.doc_type_filter else None
+    doc_type_val = body.doc_type_filter.value if body.doc_type_filter else None
     return run_financial_agent(
-        query=request.query,
-        top_k=request.top_k,
-        ticker_filter=request.ticker_filter,
+        query=body.query,
+        top_k=body.top_k,
+        ticker_filter=body.ticker_filter,
         doc_type_filter=doc_type_val,
-        max_retries=request.max_retries,
+        max_retries=body.max_retries,
+    )
+
+
+@router.post("/query/stream", tags=["agent"])
+@limiter.limit("15/minute")
+async def query_agent_stream(request: Request, body: QueryRequest):
+    """
+    Execute the agentic financial QA loop with Server-Sent Events (SSE) streaming.
+
+    Streams real-time pipeline status events ('retrieving', 'generating', 'rewriting', 'abstaining'),
+    partial text tokens, and the final AnswerResponse payload formatted according
+    to the W3C EventSource standard (`text/event-stream`).
+
+    SSE Event Types:
+    - event: status -> JSON object with pipeline stage and status message
+    - event: chunk -> JSON object with partial answer text
+    - event: done -> Full final AnswerResponse JSON payload
+    - event: error -> Error detail if pipeline execution fails
+    """
+    doc_type_val = body.doc_type_filter.value if body.doc_type_filter else None
+    return StreamingResponse(
+        stream_agent_response(
+            query=body.query,
+            top_k=body.top_k,
+            ticker_filter=body.ticker_filter,
+            doc_type_filter=doc_type_val,
+            max_retries=body.max_retries,
+        ),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 
@@ -406,7 +456,8 @@ async def query_agent(request: QueryRequest):
 # ============================================================
 
 @router.post("/cache/invalidate/document", response_model=InvalidationResult, tags=["cache"])
-async def invalidate_document_cache(request: InvalidateDocumentRequest):
+@limiter.limit("30/minute")
+async def invalidate_document_cache(request: Request, body: InvalidateDocumentRequest):
     """
     Surgically invalidate all cached answers that depend on a specific document.
 
@@ -418,11 +469,11 @@ async def invalidate_document_cache(request: InvalidateDocumentRequest):
     from app.cache.lineage import get_lineage_manager
 
     mgr = get_lineage_manager()
-    affected_queries = mgr.get_affected_queries(doc_id=request.doc_id)
-    evicted_keys = mgr.invalidate_by_document(request.doc_id)
+    affected_queries = mgr.get_affected_queries(doc_id=body.doc_id)
+    evicted_keys = mgr.invalidate_by_document(body.doc_id)
 
     return InvalidationResult(
-        target=f"doc:{request.doc_id}",
+        target=f"doc:{body.doc_id}",
         evicted_cache_keys=evicted_keys,
         evicted_count=len(evicted_keys),
         affected_queries=affected_queries,
@@ -430,7 +481,8 @@ async def invalidate_document_cache(request: InvalidateDocumentRequest):
 
 
 @router.post("/cache/invalidate/chunks", response_model=InvalidationResult, tags=["cache"])
-async def invalidate_chunks_cache(request: InvalidateChunksRequest):
+@limiter.limit("30/minute")
+async def invalidate_chunks_cache(request: Request, body: InvalidateChunksRequest):
     """
     Surgically invalidate all cached answers that depend on specific chunk IDs.
     """
@@ -438,13 +490,13 @@ async def invalidate_chunks_cache(request: InvalidateChunksRequest):
 
     mgr = get_lineage_manager()
     all_affected = []
-    for cid in request.chunk_ids:
+    for cid in body.chunk_ids:
         all_affected.extend(mgr.get_affected_queries(chunk_id=cid))
 
-    evicted_keys = mgr.invalidate_by_chunk_ids(request.chunk_ids)
+    evicted_keys = mgr.invalidate_by_chunk_ids(body.chunk_ids)
 
     return InvalidationResult(
-        target=f"chunks:{len(request.chunk_ids)}",
+        target=f"chunks:{len(body.chunk_ids)}",
         evicted_cache_keys=evicted_keys,
         evicted_count=len(evicted_keys),
         affected_queries=sorted(list(set(all_affected))),
@@ -452,11 +504,10 @@ async def invalidate_chunks_cache(request: InvalidateChunksRequest):
 
 
 @router.get("/cache/stats", response_model=CacheStats, tags=["cache"])
-async def get_cache_statistics():
+@limiter.limit("30/minute")
+async def get_cache_statistics(request: Request):
     """Retrieve operational telemetry and hit-rate statistics for the semantic cache."""
     from app.cache.semantic_cache import get_semantic_cache
 
     cache = get_semantic_cache()
     return cache.get_stats()
-
-

@@ -1,0 +1,45 @@
+{
+  "timestamp": "2026-11-11T10:20:58.631450+00:00",
+  "sse_streaming": {
+    "query": "What was Apple's total revenue in fiscal year 2023?",
+    "status_code": 200,
+    "events_received": 9,
+    "latency_ms": 11368.89,
+    "final_decision": "abstain"
+  },
+  "rate_limiting": {
+    "endpoint": "/api/v1/ingest",
+    "requests_sent": 7,
+    "status_codes": [
+      200,
+      200,
+      200,
+      200,
+      200,
+      429,
+      429
+    ],
+    "rate_limit_enforced": true
+  },
+  "prometheus_metrics": {
+    "status_code": 200,
+    "sample_telemetry": [
+      "rag_queries_total{decision=\"abstain\"} 1.0",
+      "rag_queries_created{decision=\"abstain\"} 1.794392469997602e+09",
+      "rag_query_latency_seconds_bucket{le=\"0.1\"} 0.0",
+      "rag_query_latency_seconds_bucket{le=\"0.25\"} 0.0",
+      "rag_query_latency_seconds_bucket{le=\"0.5\"} 0.0",
+      "rag_query_latency_seconds_bucket{le=\"1.0\"} 0.0",
+      "rag_query_latency_seconds_bucket{le=\"2.5\"} 0.0",
+      "rag_query_latency_seconds_bucket{le=\"5.0\"} 0.0",
+      "rag_query_latency_seconds_bucket{le=\"10.0\"} 0.0",
+      "rag_query_latency_seconds_bucket{le=\"30.0\"} 1.0",
+      "rag_query_latency_seconds_bucket{le=\"+Inf\"} 1.0",
+      "rag_query_latency_seconds_count 1.0",
+      "rag_query_latency_seconds_sum 11.351173877716064",
+      "rag_query_latency_seconds_created 1.794392458616544e+09",
+      "rag_confidence_score_bucket{le=\"0.0\"} 1.0"
+    ],
+    "total_domain_metric_lines": 71
+  }
+}

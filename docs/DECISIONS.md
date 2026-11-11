@@ -492,4 +492,57 @@ Every major tradeoff is recorded here with: the decision, why, what alternatives
 
 **When I'd change it**: If cache scale exceeds tens of millions of entries, where maintaining bidirectional set indices in Redis is replaced with an event-driven pub/sub invalidation bus (e.g. Kafka / Debezium).
 
+---
+
+## Decision 29: Server-Sent Events (SSE) over WebSockets for Agent Streaming
+
+**Decision**: Implement streaming over HTTP Server-Sent Events (`text/event-stream`) with typed status events, partial text chunks, and a final structured JSON event, rather than bidirectional WebSockets.
+
+**Why**:
+- Unidirectional fit: The agentic loop is purely server-to-client streaming during query execution. The client initiates the request and receives incremental execution progress followed by the response; no client-to-server messaging is needed mid-stream.
+- Protocol simplicity: SSE works over standard HTTP/1.1 and HTTP/2, requires no custom framing or ping/pong heartbeats, traverses corporate firewalls and edge proxies without WebSocket upgrade negotiation, and natively reconnects on transient disconnects.
+- Rich typed telemetry: Emitting custom SSE event types (`status`, `chunk`, `done`, `error`) enables client UIs to render animated pipeline phase transitions ("Retrieving documents...", "Evaluating confidence...") before text generation even begins.
+
+**Alternatives**:
+- WebSockets: Adds bidirectional overhead, stateful connection handling, and complex load-balancer connection pooling for a purely unidirectional flow.
+- Polling: Introduces artificial latency and high request overhead to repeatedly inspect job status.
+- Long Polling: Clunky connection timeouts and requires holding server connections open across retries without incremental updates.
+
+**When I'd change it**: If adding interactive human-in-the-loop multi-turn conversations where the user interrupts or guides the agent mid-generation.
+
+---
+
+## Decision 30: Application-Level Endpoint Rate Limiting (SlowAPI) over External API Gateways
+
+**Decision**: Implement IP-based rate limiting directly within the FastAPI application using SlowAPI with per-endpoint thresholds (`/ingest`: 5/min, `/query`: 15/min, `/search`: 30/min, `/health`: exempt).
+
+**Why**:
+- Zero infrastructure overhead: Runs within the existing Python/FastAPI environment without requiring an external Kong, Traefik, or Envoy gateway deployment.
+- Domain-aware tiering: Different endpoints have wildly different computational and monetary costs. External gateways require complex routing rules to enforce distinct limits on vector search vs. LLM generation vs. ingestion, whereas in-code decorators configure this cleanly in one line per endpoint.
+- Unified observability: Throttled requests immediately trigger custom Prometheus counters (`rag_rate_limited_total`) and return uniform JSON payloads (`retry_after_seconds: 60`).
+
+**Alternatives**:
+- External API Gateway (Kong / Envoy / Cloudflare): More scalable across distributed clusters, but introduces infrastructure sprawl, external dependencies, and local dev friction.
+- Global single limit: Throttles lightweight search requests at the same strict threshold needed to protect costly LLM generation.
+
+**When I'd change it**: If scaling to a multi-instance Kubernetes cluster with hundreds of thousands of concurrent users, where rate-limiting state must be enforced at the ingress layer or shared across an enterprise Redis cluster.
+
+---
+
+## Decision 31: Domain-Specific Prometheus Metrics over Generic HTTP Middleware
+
+**Decision**: Instrument custom Prometheus counters, histograms, and gauges specifically designed for agentic RAG (`rag_queries_total`, `rag_query_latency_seconds`, `rag_confidence_score`, `rag_cache_hits_total`, `rag_retrieval_latency_seconds`, `rag_active_queries`) alongside standard application info.
+
+**Why**:
+- Actionable RAG telemetry: Generic HTTP middlewares (like `prometheus-fastapi-instrumentator`) only report HTTP 200/500 counts and route latency. They provide zero visibility into RAG quality: What percentage of queries are abstaining? How does confidence correlate with retrieval latency? What is the L1 vs L2 cache hit distribution?
+- SRE/Production readiness: Exposing `/metrics` in the standard Prometheus text format allows plug-and-play scraping by any Grafana/Prometheus infrastructure without custom log parsing.
+- Zero network latency: Metrics are updated via atomic in-memory counters (< 1 microsecond per observation) with zero external network overhead.
+
+**Alternatives**:
+- Generic HTTP instrumentator: Captures route-level status codes but cannot capture domain state (citations, confidence, retry counts, cache tiers).
+- Logging-only observability: Writing metrics to stdout requires log aggregation pipelines (ELK / Loki) and expensive query-time histogram aggregations.
+
+**When I'd change it**: If transitioning to OpenTelemetry (OTel) traces and metrics collectors across a polyglot microservice mesh.
+
+
 
