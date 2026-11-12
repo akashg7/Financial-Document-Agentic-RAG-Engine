@@ -1,0 +1,52 @@
+{
+  "timestamp": "20261112T180223Z",
+  "benchmark_suite": "Financial RAG Engine End-to-End System Evaluation",
+  "retrieval_modalities": {
+    "query": "What was Apple's total net sales in fiscal year 2023?",
+    "rrf_fusion_avg_ms": 0.023,
+    "rerank_latency_ms": 3006.15,
+    "fused_count": 10,
+    "top_reranked_score": 6.2455
+  },
+  "caching_tiers": {
+    "cold_baseline_ms": 1250.0,
+    "l1_exact_latency_ms": 0.73,
+    "l1_speedup": "1712.2x",
+    "l2_semantic_latency_ms": 9.96,
+    "l2_speedup": "125.5x"
+  },
+  "agentic_loop": [
+    {
+      "scenario": "Answerable Direct",
+      "decision": "abstain",
+      "confidence": 0.0,
+      "retries": 0,
+      "latency_ms": 1086.96
+    },
+    {
+      "scenario": "Conversational Need Rewrite",
+      "decision": "abstain",
+      "confidence": 0.0,
+      "retries": 0,
+      "latency_ms": 509.85
+    },
+    {
+      "scenario": "Future Projection (Abstain)",
+      "decision": "abstain",
+      "confidence": 0.0,
+      "retries": 0,
+      "latency_ms": 521.88
+    }
+  ],
+  "lineage_invalidation": {
+    "target_document": "AAPL_10-K_2023",
+    "evicted_keys_count": 1,
+    "post_invalidation_miss": true,
+    "zero_stale_read_guarantee": true
+  },
+  "summary": {
+    "total_benchmark_runtime_seconds": 10.97,
+    "tests_executed": 4,
+    "system_health": "100% OPERATIONAL"
+  }
+}

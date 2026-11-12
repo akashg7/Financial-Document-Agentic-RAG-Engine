@@ -47,7 +47,7 @@ See [docs/architecture.md](docs/architecture.md) for diagrams.
 - [x] Day 7: LangGraph agent (generate/rewrite/abstain, StateGraph Hand-Write #3)
 - [x] Day 8: Caching, lineage, delta re-ingest (Lineage DAG Hand-Write #4)
 - [x] Day 9: SSE streaming, rate limiting, observability
-- [ ] Day 10: Final benchmarks, RAGAS, interview prep
+- [x] Day 10: Final benchmarks, RAGAS, interview prep
 
 ## Results
 
@@ -55,6 +55,7 @@ See [docs/architecture.md](docs/architecture.md) for diagrams.
 
 ## Documentation
 
+- [Interview Defense Guide](docs/interview-defense.md) — 5-min walkthrough, 20 hardest questions, evidence mapping & 4 XYZ resume bullets
 - [Architecture](docs/architecture.md) — system diagrams
 - [Decisions](docs/DECISIONS.md) — design tradeoffs
 - [Version History](docs/versions/) — daily changelogs

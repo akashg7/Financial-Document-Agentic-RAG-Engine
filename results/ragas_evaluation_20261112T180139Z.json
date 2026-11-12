@@ -1,0 +1,52 @@
+{
+  "timestamp": "20261112T180139Z",
+  "benchmark_framework": "RAGAS Triad + Financial Citation Grounding",
+  "total_queries": 119,
+  "answerable_count": 99,
+  "unanswerable_count": 20,
+  "overall_scores": {
+    "faithfulness": 1.0,
+    "answer_relevancy": 0.7426,
+    "context_precision": 0.8682,
+    "context_recall": 0.9056,
+    "unanswerable_abstain_accuracy": 1.0
+  },
+  "category_breakdown": {
+    "financial_metric": {
+      "count": 43,
+      "mean_faithfulness": 1.0,
+      "mean_answer_relevancy": 0.7904,
+      "mean_context_precision": 0.9337,
+      "mean_context_recall": 0.9547
+    },
+    "risk_factor": {
+      "count": 17,
+      "mean_faithfulness": 1.0,
+      "mean_answer_relevancy": 0.7231,
+      "mean_context_precision": 0.8412,
+      "mean_context_recall": 0.8912
+    },
+    "strategy": {
+      "count": 15,
+      "mean_faithfulness": 1.0,
+      "mean_answer_relevancy": 0.6134,
+      "mean_context_precision": 0.84,
+      "mean_context_recall": 0.89
+    },
+    "comparison": {
+      "count": 13,
+      "mean_faithfulness": 1.0,
+      "mean_answer_relevancy": 0.7751,
+      "mean_context_precision": 0.7808,
+      "mean_context_recall": 0.8308
+    },
+    "temporal": {
+      "count": 11,
+      "mean_faithfulness": 1.0,
+      "mean_answer_relevancy": 0.7235,
+      "mean_context_precision": 0.7955,
+      "mean_context_recall": 0.8455
+    }
+  },
+  "latency_total_seconds": 9.35
+}
