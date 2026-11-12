@@ -115,3 +115,4 @@ class TestLangSmithTracing:
         assert os.environ.get("LANGCHAIN_API_KEY") == "ls_test_key_12345"
         assert os.environ.get("LANGCHAIN_PROJECT") == "financial-rag-test"
         assert os.environ.get("LANGCHAIN_ENDPOINT") == "https://api.smith.langchain.com"
+

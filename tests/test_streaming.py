@@ -121,3 +121,4 @@ class TestStreamingEndpoint:
             json={"query": ""},
         )
         assert response.status_code == 422
+

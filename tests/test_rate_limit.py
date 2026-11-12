@@ -82,3 +82,4 @@ class TestRateLimiter:
 
             r_metrics = await client.get("/metrics")
             assert r_metrics.status_code == 200
+

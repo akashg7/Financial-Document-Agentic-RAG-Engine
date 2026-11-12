@@ -141,3 +141,4 @@ Generic HTTP metrics treat all three as identical "successes"! We implemented **
 > 2. `rag_confidence_score` histograms to monitor output quality distributions.
 > 3. `rag_cache_hits_total` partitioned by tier (`L1_exact` vs. `L2_semantic`) to measure caching efficiency.
 > 4. Phase-specific latency histograms separating retrieval latency from LLM generation latency to pinpoint upstream bottlenecks."
+

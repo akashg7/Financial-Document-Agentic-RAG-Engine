@@ -82,3 +82,4 @@
 - 5 Observability tests (Prometheus scraping, custom metrics, LangSmith config)
 - 168 Existing unit & integration tests (agent, cache, retrieval, LLM, chunker, vector store)
 ```
+

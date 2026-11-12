@@ -18,3 +18,4 @@ limiter = Limiter(
     enabled=settings.rate_limit_enabled,
     default_limits=[settings.rate_limit_default],
 )
+

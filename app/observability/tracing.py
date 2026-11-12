@@ -45,3 +45,4 @@ def setup_langsmith() -> bool:
         settings.langsmith_project,
     )
     return True
+
